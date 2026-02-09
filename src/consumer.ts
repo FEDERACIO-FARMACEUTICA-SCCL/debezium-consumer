@@ -4,9 +4,11 @@ import { DebeziumEvent, OP_LABELS } from "./types/debezium";
 import { detectChanges } from "./watched-fields";
 import { updateStore, getStoreStats } from "./store";
 import { buildSupplierPayload } from "./supplier";
+import { buildSupplierContactPayload } from "./supplier-contact";
 
-// Tables that feed the Supplier payload
+// Tables that feed each payload
 const SUPPLIER_TABLES = new Set(["ctercero", "gproveed"]);
+const CONTACT_TABLES = new Set(["ctercero", "gproveed", "cterdire"]);
 
 export async function createConsumer(config: AppConfig) {
   const kafka = new KafkaJS.Kafka({
@@ -15,9 +17,12 @@ export async function createConsumer(config: AppConfig) {
     },
   });
 
+  // Ephemeral group ID: always read from beginning to rebuild the in-memory store
+  const ephemeralGroupId = `${config.kafka.groupId}-${Date.now()}`;
+
   const consumer = kafka.consumer({
     kafkaJS: {
-      groupId: config.kafka.groupId,
+      groupId: ephemeralGroupId,
       fromBeginning: true,
       autoCommit: false,
     },
@@ -32,12 +37,7 @@ export async function createConsumer(config: AppConfig) {
   console.log(
     `[Consumer] Subscribed to topics: ${config.kafka.topics.join(", ")}`
   );
-
-  // Seek all partitions to beginning so the in-memory store is rebuilt on every restart
-  for (const topic of config.kafka.topics) {
-    consumer.seek({ topic, partition: 0, offset: "0" });
-  }
-  console.log(`[Consumer] Seeking all partitions to beginning (store rebuild)`);
+  console.log(`[Consumer] Using ephemeral group: ${ephemeralGroupId} (reads from beginning)`);
 
   let snapshotLogCounter = 0;
   let storeReady = false;
@@ -116,25 +116,37 @@ export async function createConsumer(config: AppConfig) {
           );
         }
 
-        // 3. Build Supplier payload if the change is on a supplier-related table
-        if (!SUPPLIER_TABLES.has(tableLower)) return;
-
+        // 3. Extract codigo and build payloads
         const record = event.after ?? event.before;
         const codigo = String(record?.["codigo"] ?? "").trim();
 
         if (!codigo) {
-          console.log(`  No 'codigo' found in event, skipping supplier build.`);
+          console.log(`  No 'codigo' found in event, skipping payload build.`);
           return;
         }
 
-        const supplierPayload = buildSupplierPayload(String(codigo));
+        // Supplier payload (ctercero, gproveed)
+        if (SUPPLIER_TABLES.has(tableLower)) {
+          const supplierPayload = buildSupplierPayload(codigo);
+          if (supplierPayload) {
+            console.log(
+              `[Supplier] Payload:`,
+              JSON.stringify(supplierPayload, null, 2)
+            );
+            // TODO: enviar supplierPayload a la API REST
+          }
+        }
 
-        if (supplierPayload) {
-          console.log(
-            `[Supplier] Payload built:`,
-            JSON.stringify(supplierPayload, null, 2)
-          );
-          // TODO: enviar supplierPayload a la API REST
+        // Supplier_Contacts payload (ctercero, gproveed, cterdire)
+        if (CONTACT_TABLES.has(tableLower)) {
+          const contactPayload = buildSupplierContactPayload(codigo);
+          if (contactPayload) {
+            console.log(
+              `[SupplierContact] Payload:`,
+              JSON.stringify(contactPayload, null, 2)
+            );
+            // TODO: enviar contactPayload a la API REST
+          }
         }
       } catch (err) {
         console.error(`[Consumer] Error processing message:`, err);
