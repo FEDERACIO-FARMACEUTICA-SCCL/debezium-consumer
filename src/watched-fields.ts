@@ -18,6 +18,12 @@ export interface ChangeResult {
   changedFields: FieldChange[];
 }
 
+/** Normalize a value for comparison: trim strings to avoid Informix CHAR padding false positives. */
+function normalize(val: unknown): unknown {
+  if (typeof val === "string") return val.trim();
+  return val;
+}
+
 export function detectChanges(
   event: DebeziumEvent
 ): ChangeResult | null {
@@ -39,8 +45,8 @@ export function detectChanges(
         changedFields.push({ field, before: null, after: afterVal });
         break;
       case "u":
-        // Update: only include fields that actually changed
-        if (beforeVal !== afterVal) {
+        // Update: only include fields that actually changed (normalized to avoid CHAR padding diffs)
+        if (normalize(beforeVal) !== normalize(afterVal)) {
           changedFields.push({ field, before: beforeVal, after: afterVal });
         }
         break;

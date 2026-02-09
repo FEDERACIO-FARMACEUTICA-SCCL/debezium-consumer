@@ -1,5 +1,6 @@
 import { loadConfig } from "./config";
 import { createConsumer } from "./consumer";
+import { stopRetryLoop } from "./pending-buffer";
 
 async function main() {
   const config = loadConfig();
@@ -12,6 +13,7 @@ async function main() {
   const shutdown = async (signal: string) => {
     console.log(`\n[App] Received ${signal}, shutting down...`);
     try {
+      stopRetryLoop();
       await consumer.disconnect();
       console.log("[App] Consumer disconnected.");
     } catch (err) {

@@ -52,14 +52,17 @@ function updateArrayStore(
   after: StoreRecord | null
 ): void {
   if (op === "c" || op === "r") {
-    // Insert / snapshot: add to array
+    // Insert / snapshot: add to array (skip if identical record already exists)
     if (!after) return;
     const codigo = String(after["codigo"] ?? "").trim();
     if (!codigo) return;
 
     const arr = store.get(codigo) ?? [];
-    arr.push(after);
-    store.set(codigo, arr);
+    const duplicate = arr.some((r) => recordsMatch(r, after));
+    if (!duplicate) {
+      arr.push(after);
+      store.set(codigo, arr);
+    }
     return;
   }
 

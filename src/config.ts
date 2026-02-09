@@ -5,6 +5,7 @@ export interface AppConfig {
     topics: string[];
     autoOffsetReset: string;
   };
+  logLevel: "info" | "debug";
 }
 
 const DEFAULT_TOPICS = [
@@ -15,6 +16,7 @@ const DEFAULT_TOPICS = [
 ].join(",");
 
 export function loadConfig(): AppConfig {
+  const logLevel = process.env.LOG_LEVEL ?? "info";
   return {
     kafka: {
       brokers: process.env.KAFKA_BROKERS ?? "kafka:29092",
@@ -24,5 +26,6 @@ export function loadConfig(): AppConfig {
         .map((t) => t.trim()),
       autoOffsetReset: process.env.KAFKA_AUTO_OFFSET_RESET ?? "earliest",
     },
+    logLevel: logLevel === "debug" ? "debug" : "info",
   };
 }

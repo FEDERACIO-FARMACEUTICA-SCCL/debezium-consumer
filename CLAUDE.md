@@ -25,7 +25,7 @@ npm run dev
 ## Arquitectura del codigo
 
 - `src/index.ts` - Entry point. Carga config, crea consumer, gestiona SIGINT/SIGTERM para graceful shutdown.
-- `src/config.ts` - Configuracion via variables de entorno (`KAFKA_BROKERS`, `KAFKA_GROUP_ID`, `KAFKA_TOPICS`, `KAFKA_AUTO_OFFSET_RESET`). Defaults apuntan al entorno Docker.
+- `src/config.ts` - Configuracion via variables de entorno (`KAFKA_BROKERS`, `KAFKA_GROUP_ID`, `KAFKA_TOPICS`, `KAFKA_AUTO_OFFSET_RESET`, `LOG_LEVEL`). Defaults apuntan al entorno Docker.
 - `src/consumer.ts` - Logica del consumer. Usa `@confluentinc/kafka-javascript` con API KafkaJS. Deserializa el envelope Debezium (`raw.payload ?? raw`) y loguea operacion + tabla + datos.
 - `src/types/debezium.ts` - Interfaces TypeScript: `DebeziumEvent<T>`, `DebeziumSource`, `Operation`, `OP_LABELS`.
 
@@ -47,6 +47,11 @@ npm run dev
 - `platform: linux/amd64` es obligatorio en Apple Silicon (librdkafka es nativo)
 - El compose monta `./src:/app/src:ro` + `command: npx tsx --watch` para hot-reload sin rebuild
 - Se conecta a red externa `informix-debezium_default` para alcanzar `kafka:29092`
+- El Dockerfile usa `USER node` (uid 1000) para no correr como root en produccion
+
+### Seguridad - LOG_LEVEL
+- `LOG_LEVEL=info` (default): los logs solo muestran metadatos (tabla, operacion, nombres de campos cambiados, codigo). No se loguean valores PII (NIFs, nombres, direcciones, telefonos, emails).
+- `LOG_LEVEL=debug`: los logs incluyen valores completos before/after y payloads JSON. Solo usar en desarrollo.
 
 ### Topics
 Los topics siguen el patron `{prefix}.{schema}.{table}` donde prefix=`informix` (configurado en Debezium como `topic.prefix`). No incluyen el nombre de la base de datos en el path.

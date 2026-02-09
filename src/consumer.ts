@@ -5,6 +5,7 @@ import { detectChanges } from "./watched-fields";
 import { updateStore, getStoreStats } from "./store";
 import { buildSupplierPayload } from "./supplier";
 import { buildSupplierContactPayload } from "./supplier-contact";
+import { addPending, startRetryLoop } from "./pending-buffer";
 
 // Tables that feed each payload
 const SUPPLIER_TABLES = new Set(["ctercero", "gproveed"]);
@@ -39,8 +40,15 @@ export async function createConsumer(config: AppConfig) {
   );
   console.log(`[Consumer] Using ephemeral group: ${ephemeralGroupId} (reads from beginning)`);
 
+  // Start retry loop for incomplete payloads (queued codigos retried periodically)
+  startRetryLoop(config);
+
   let snapshotLogCounter = 0;
   let storeReady = false;
+
+  // Track snapshot completion per topic — storeReady only when ALL topics are done
+  const topicSnapshotDone = new Set<string>();
+  const allTopics = new Set(config.kafka.topics);
 
   await consumer.run({
     eachMessage: async ({ topic, partition, message }) => {
@@ -77,14 +85,34 @@ export async function createConsumer(config: AppConfig) {
               `[Store rebuild] Progress: ${JSON.stringify(stats)} (${snapshotLogCounter} events processed)`
             );
           }
-          // First live event (non-snapshot) signals the store is fully loaded
-          if (event.op !== "r" && !storeReady) {
+
+          // Track snapshot completion using Debezium's source.snapshot field
+          // Debezium sends "last" only on the FINAL event of the entire snapshot (not per-topic).
+          // So when we see "last", mark ALL topics as done.
+          const snapshotFlag = String(event.source.snapshot ?? "false");
+          if (snapshotFlag === "last") {
+            for (const t of allTopics) topicSnapshotDone.add(t);
+            console.log(
+              `[Store rebuild] All topics snapshot complete (snapshot "last" received on ${topic})`
+            );
+          } else if (event.op !== "r" && !topicSnapshotDone.has(topic)) {
+            topicSnapshotDone.add(topic);
+            console.log(
+              `[Store rebuild] Topic ${topic} snapshot complete (${topicSnapshotDone.size}/${allTopics.size})`
+            );
+          }
+
+          // Only mark store as ready when ALL subscribed topics have finished snapshot
+          if (!storeReady && topicSnapshotDone.size >= allTopics.size) {
             storeReady = true;
             const stats = getStoreStats();
             console.log(
               `[Store rebuild] Complete: ${JSON.stringify(stats)} (${snapshotLogCounter} events replayed)`
             );
             snapshotLogCounter = 0;
+
+            // If this event is a snapshot event, don't process it as live
+            if (event.op === "r") return;
             // Fall through to process this live event
           } else {
             return;
@@ -110,9 +138,15 @@ export async function createConsumer(config: AppConfig) {
         console.log(
           `[WATCH] ${label} on ${changes.table} — ${changes.changedFields.length} field(s) changed:`
         );
-        for (const ch of changes.changedFields) {
+        if (config.logLevel === "debug") {
+          for (const ch of changes.changedFields) {
+            console.log(
+              `  ${ch.field}: ${JSON.stringify(ch.before)} → ${JSON.stringify(ch.after)}`
+            );
+          }
+        } else {
           console.log(
-            `  ${ch.field}: ${JSON.stringify(ch.before)} → ${JSON.stringify(ch.after)}`
+            `  Changed fields: ${changes.changedFields.map((c) => c.field).join(", ")}`
           );
         }
 
@@ -129,11 +163,17 @@ export async function createConsumer(config: AppConfig) {
         if (SUPPLIER_TABLES.has(tableLower)) {
           const supplierPayload = buildSupplierPayload(codigo);
           if (supplierPayload) {
-            console.log(
-              `[Supplier] Payload:`,
-              JSON.stringify(supplierPayload, null, 2)
-            );
+            if (config.logLevel === "debug") {
+              console.log(
+                `[Supplier] Payload:`,
+                JSON.stringify(supplierPayload, null, 2)
+              );
+            } else {
+              console.log(`[Supplier] Payload built for codigo=${codigo}`);
+            }
             // TODO: enviar supplierPayload a la API REST
+          } else {
+            addPending(codigo, "supplier");
           }
         }
 
@@ -141,11 +181,17 @@ export async function createConsumer(config: AppConfig) {
         if (CONTACT_TABLES.has(tableLower)) {
           const contactPayload = buildSupplierContactPayload(codigo);
           if (contactPayload) {
-            console.log(
-              `[SupplierContact] Payload:`,
-              JSON.stringify(contactPayload, null, 2)
-            );
+            if (config.logLevel === "debug") {
+              console.log(
+                `[SupplierContact] Payload:`,
+                JSON.stringify(contactPayload, null, 2)
+              );
+            } else {
+              console.log(`[SupplierContact] Payload built for codigo=${codigo}`);
+            }
             // TODO: enviar contactPayload a la API REST
+          } else {
+            addPending(codigo, "contact");
           }
         }
       } catch (err) {
