@@ -1,0 +1,20 @@
+services:
+  consumer:
+    container_name: informix-consumer
+    build: .
+    platform: linux/amd64
+    environment:
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_GROUP_ID: informix-consumer
+      KAFKA_AUTO_OFFSET_RESET: earliest
+    volumes:
+      - ./src:/app/src:ro
+    command: npx tsx --watch src/index.ts
+    networks:
+      - debezium-network
+    restart: on-failure
+
+networks:
+  debezium-network:
+    external: true
+    name: informix-debezium_default
