@@ -1,6 +1,10 @@
-import pino from "pino";
+import pino, { Logger } from "pino";
 
-export const logger = pino({
-  level: process.env.LOG_LEVEL ?? "info",
+export let logger: Logger = pino({
+  level: "info",
   base: { service: "informix-consumer" },
 });
+
+export function initLogger(level: string): void {
+  logger = pino({ level, base: { service: "informix-consumer" } });
+}

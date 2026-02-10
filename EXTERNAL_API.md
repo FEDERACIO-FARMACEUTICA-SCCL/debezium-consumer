@@ -39,7 +39,7 @@ JSON Contacs relacionados con Suppliers:
 
           “NIF": "A12345678",
 
-          “Adress": "Calle Mayor 15",
+          “Address": "Calle Mayor 15",
 
           “City": "Barcelona",
 
@@ -83,7 +83,7 @@ Name [VARCHAR(255)] : FedeFarma_imports..ctercero.nombre
 
 NIF [VARCHAR(50)] : FedeFarma_imports..ctercero.cif
 
-Adress [VARCHAR(255)] : FedeFarma_imports..cterdire.direcc
+Address [VARCHAR(255)] : FedeFarma_imports..cterdire.direcc
 
 City [VARCHAR(255)] : FedeFarma_imports..cterdire.poblac
 

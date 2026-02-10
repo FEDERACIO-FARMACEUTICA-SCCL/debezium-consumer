@@ -39,14 +39,56 @@ open http://localhost:3000
 
 ## Arquitectura del codigo
 
-- `src/index.ts` - Entry point. Carga config, crea consumer, gestiona SIGINT/SIGTERM para graceful shutdown.
-- `src/config.ts` - Configuracion via variables de entorno (`KAFKA_BROKERS`, `KAFKA_GROUP_ID`, `KAFKA_TOPICS`, `KAFKA_AUTO_OFFSET_RESET`, `LOG_LEVEL`). Defaults apuntan al entorno Docker.
-- `src/logger.ts` - Instancia de pino (JSON structured logging). Level viene de `LOG_LEVEL`, campo base `service: "informix-consumer"`.
-- `src/consumer.ts` - Logica del consumer. Usa `@confluentinc/kafka-javascript` con API KafkaJS. Deserializa el envelope Debezium (`raw.payload ?? raw`) y procesa eventos CDC.
-- `src/supplier.ts` - Construye payload `Supplier` a partir del store (ctercero + gproveed).
-- `src/supplier-contact.ts` - Construye payload `SupplierContact` (ctercero + gproveed + cterdire).
-- `src/pending-buffer.ts` - Buffer de reintentos para codigos con datos incompletos. Max 10K entries, evicta los mas antiguos.
-- `src/types/debezium.ts` - Interfaces TypeScript: `DebeziumEvent<T>`, `DebeziumSource`, `Operation`, `OP_LABELS`.
+```
+src/
+  index.ts                      # Composition root: wiring de todos los modulos
+  config.ts                     # Configuracion (kafka + http placeholder)
+  logger.ts                     # initLogger() + singleton mutable
+
+  types/
+    debezium.ts                 # Interfaces Debezium: DebeziumEvent, DebeziumSource, Operation, OP_LABELS
+    payloads.ts                 # Interfaces Supplier, SupplierContact, PayloadType, AnyPayload
+
+  domain/
+    table-registry.ts           # Fuente unica de verdad para tablas, watched fields y payload mappings
+    store.ts                    # Clase InMemoryStore (data-driven desde registry)
+    watched-fields.ts           # detectChanges() lee WATCHED_FIELDS del registry
+
+  payloads/
+    payload-builder.ts          # Interface PayloadBuilder + PayloadRegistry
+    supplier.ts                 # SupplierBuilder implements PayloadBuilder
+    supplier-contact.ts         # SupplierContactBuilder implements PayloadBuilder
+
+  kafka/
+    consumer.ts                 # Solo infra Kafka (connect, subscribe, run)
+    snapshot-tracker.ts         # Maquina de estados del snapshot
+    message-handler.ts          # Orquestador eachMessage (wires domain logic)
+
+  dispatch/
+    pending-buffer.ts           # Buffer de reintentos para codigos con datos incompletos
+    dispatcher.ts               # Interface PayloadDispatcher + LogDispatcher
+
+  http/
+    server.ts                   # Placeholder para futuro servidor HTTP
+```
+
+### Flujo de datos
+
+1. `kafka/consumer.ts` recibe mensajes y delega a `MessageCallback`
+2. `kafka/message-handler.ts` parsea el envelope Debezium, actualiza el store, consulta el snapshot tracker
+3. Para eventos live CDC: detecta cambios en watched fields, busca `TABLE_TO_PAYLOADS` para saber que builders ejecutar
+4. `payloads/supplier.ts` y `payloads/supplier-contact.ts` construyen payloads desde el store
+5. `dispatch/dispatcher.ts` recibe el payload construido (actualmente solo loguea)
+6. Si un builder retorna null, el codigo va al `pending-buffer` para reintentos
+
+### Como añadir un nuevo payload type
+
+1. Añadir fila en `TABLE_REGISTRY` para la nueva tabla + añadir el tipo a `feedsPayloads` de tablas existentes si aplica
+2. Añadir el tipo al union `PayloadType` en `types/payloads.ts`
+3. Crear `payloads/nuevo.ts` implementando `PayloadBuilder`
+4. Registrar en `index.ts`: `registry.register(new NuevoBuilder())`
+
+**Zero cambios** en consumer, message handler, pending buffer, store o watched fields.
 
 ## Detalles tecnicos importantes
 
@@ -57,10 +99,19 @@ open http://localhost:3000
   - `fromBeginning` va en el consumer config, NO en `subscribe()`
   - `subscribe()` acepta `{ topics: string[] }`, no `{ topic, fromBeginning }`
 
+### Table Registry (fuente unica de verdad)
+- `domain/table-registry.ts` define `TABLE_REGISTRY` con todas las tablas, sus store kinds, watched fields, payload mappings y topics
+- Lookups derivados computados una vez al cargar modulo: `TABLE_MAP`, `WATCHED_FIELDS`, `TABLE_TO_PAYLOADS`, `ALL_TOPICS`
+- Elimina la necesidad de hardcodear nombres de tabla en multiples ficheros
+
 ### Envelope Debezium
 - Los mensajes Kafka de Debezium vienen con formato `{ schema, payload }` cuando se usa JSON sin schema registry
 - El evento CDC real esta en `payload` (con `op`, `source`, `before`, `after`, `ts_ms`)
 - El consumer hace `raw.payload ?? raw` para soportar ambos formatos
+
+### Logger
+- `initLogger(level)` se llama desde `index.ts` despues de cargar config
+- El singleton `logger` se reasigna; funciona con CommonJS porque TypeScript compila imports como property access sobre el modulo
 
 ### Docker
 - `platform: linux/amd64` es obligatorio en Apple Silicon (librdkafka es nativo)
@@ -70,12 +121,12 @@ open http://localhost:3000
 
 ### Logging (pino)
 - Todos los logs salen como JSON estructurado via `pino`. No queda ningun `console.log` en el codigo.
-- Cada log lleva un campo `tag` que permite filtrar en Grafana: `CDC`, `StoreRebuild`, `Watch`, `Supplier`, `SupplierContact`, `PendingBuffer`, `Consumer`.
+- Cada log lleva un campo `tag` que permite filtrar en Grafana: `CDC`, `StoreRebuild`, `Watch`, `Supplier`, `SupplierContact`, `PendingBuffer`, `Consumer`, `Dispatcher`.
 - `LOG_LEVEL=info` (default): metadatos solamente (tabla, operacion, campos cambiados, codigo). No se loguean valores PII.
 - `LOG_LEVEL=debug`: incluye payloads completos (Supplier/SupplierContact bodies), valores before/after de campos, y mensajes non-CDC. Solo usar en desarrollo.
 
 ### Topics
-Los topics siguen el patron `{prefix}.{schema}.{table}` donde prefix=`informix` (configurado en Debezium como `topic.prefix`). No incluyen el nombre de la base de datos en el path.
+Los topics siguen el patron `{prefix}.{schema}.{table}` donde prefix=`informix` (configurado en Debezium como `topic.prefix`). No incluyen el nombre de la base de datos en el path. Los topics default se derivan automaticamente de `ALL_TOPICS` en el table registry.
 
 ### Monitoring (Grafana + Loki + Promtail)
 
@@ -105,7 +156,8 @@ Volumes Docker: `loki-data`, `grafana-data` (persistencia entre reinicios).
 
 ## Proximos pasos previstos
 
-1. Añadir cliente HTTP para enviar payloads transformados a la API destino
+1. Implementar `HttpDispatcher` para enviar payloads transformados a la API destino
 2. Manejo de reintentos HTTP y dead letter queue
-3. Filtrado por tipo de operacion si es necesario
-4. Alertas en Grafana (ej. errores sostenidos, pending buffer creciendo)
+3. Implementar servidor HTTP en `http/server.ts` (webhooks + health endpoint)
+4. Filtrado por tipo de operacion si es necesario
+5. Alertas en Grafana (ej. errores sostenidos, pending buffer creciendo)

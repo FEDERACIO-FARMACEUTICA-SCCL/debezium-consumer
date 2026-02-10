@@ -58,7 +58,7 @@ Una vez cargado el historico, el consumer queda escuchando cambios en vivo. Cuan
 1. **Actualiza el store** con los nuevos datos
 2. **Detecta si algun campo monitorizado cambio** (ej: `nombre`, `cif`, `fecalt`...)
 3. Si hay cambios relevantes, **construye el payload Supplier** cruzando datos de `ctercero` y `gproveed` usando el campo `codigo` como clave comun
-4. (Futuro) Envia el payload a la API REST
+4. (Futuro) Envia el payload a la API REST via `PayloadDispatcher`
 
 ### Por que no necesita conectarse a Informix?
 
@@ -88,23 +88,69 @@ informix-consumer/
 │       └── dashboards/
 │           └── informix-consumer.json  # Dashboard pre-construido (5 paneles)
 └── src/
-    ├── index.ts             # Entry point + graceful shutdown
-    ├── config.ts            # Variables de entorno con defaults
-    ├── logger.ts            # Instancia pino (JSON structured logging)
-    ├── consumer.ts          # Logica del consumer Kafka + orquestacion
-    ├── store.ts             # Cache en memoria (Maps por tabla)
-    ├── supplier.ts          # Construccion del payload Supplier
-    ├── supplier-contact.ts  # Construccion del payload SupplierContact
-    ├── pending-buffer.ts    # Reintentos para payloads con datos incompletos
-    ├── watched-fields.ts    # Campos monitorizados + deteccion de cambios
-    └── types/
-        └── debezium.ts      # Tipos para eventos CDC de Debezium
+    ├── index.ts                     # Composition root: wiring de todos los modulos
+    ├── config.ts                    # Variables de entorno con defaults (kafka + http)
+    ├── logger.ts                    # initLogger() + singleton mutable pino
+    │
+    ├── types/
+    │   ├── debezium.ts              # Tipos para eventos CDC de Debezium
+    │   └── payloads.ts              # Interfaces Supplier, SupplierContact, PayloadType
+    │
+    ├── domain/
+    │   ├── table-registry.ts        # Fuente unica de verdad para tablas y mappings
+    │   ├── store.ts                 # InMemoryStore data-driven desde registry
+    │   └── watched-fields.ts        # Deteccion de cambios en campos monitorizados
+    │
+    ├── payloads/
+    │   ├── payload-builder.ts       # Interface PayloadBuilder + PayloadRegistry
+    │   ├── supplier.ts              # SupplierBuilder implements PayloadBuilder
+    │   └── supplier-contact.ts      # SupplierContactBuilder implements PayloadBuilder
+    │
+    ├── kafka/
+    │   ├── consumer.ts              # Infra Kafka pura (connect, subscribe, run)
+    │   ├── snapshot-tracker.ts      # Maquina de estados del snapshot
+    │   └── message-handler.ts       # Orquestador eachMessage
+    │
+    ├── dispatch/
+    │   ├── pending-buffer.ts        # Reintentos para payloads con datos incompletos
+    │   └── dispatcher.ts            # Interface PayloadDispatcher + LogDispatcher
+    │
+    └── http/
+        └── server.ts               # Placeholder para futuro servidor HTTP
 ```
+
+### Capas y responsabilidades
+
+| Capa | Directorio | Responsabilidad |
+|------|-----------|-----------------|
+| **Types** | `types/` | Interfaces compartidas (Debezium events, payload shapes) |
+| **Domain** | `domain/` | Table registry (fuente unica de verdad), store en memoria, deteccion de cambios |
+| **Payloads** | `payloads/` | Builders de payloads (patron Strategy via `PayloadBuilder` interface) |
+| **Kafka** | `kafka/` | Infraestructura Kafka pura, snapshot state machine, orquestacion de mensajes |
+| **Dispatch** | `dispatch/` | Envio de payloads (`PayloadDispatcher` interface), buffer de reintentos |
+| **HTTP** | `http/` | Futuro servidor HTTP para webhooks y health checks |
+
+### Como añadir un nuevo payload type
+
+Para añadir, por ejemplo, un payload `warehouse` alimentado por `ctercero` + `calmacen`:
+
+1. Añadir fila en `TABLE_REGISTRY` (`domain/table-registry.ts`) para `calmacen` + añadir `"warehouse"` a `feedsPayloads` de `ctercero`
+2. Añadir `"warehouse"` al tipo `PayloadType` en `types/payloads.ts`
+3. Crear `payloads/warehouse.ts` implementando `PayloadBuilder`
+4. Registrar en `index.ts`: `registry.register(new WarehouseBuilder())`
+
+**Zero cambios** en consumer, message handler, pending buffer, store o watched fields.
 
 ## Flujo del consumer (paso a paso)
 
 ```
 Mensaje Kafka llega
+  |
+  v
+kafka/consumer.ts delega a MessageCallback
+  |
+  v
+kafka/message-handler.ts:
   |
   v
 Parsear evento Debezium (extraer payload de {schema, payload})
@@ -113,31 +159,30 @@ Parsear evento Debezium (extraer payload de {schema, payload})
 Actualizar store en memoria (siempre, para todas las tablas)
   |
   v
-Es snapshot (op: "r") o estamos en fase de rebuild?
+snapshot-tracker: Es snapshot (op: "r") o estamos en fase de rebuild?
   |-- Si --> Solo actualizar store, no procesar como cambio
   |-- No --> Continuar (es un cambio CDC en vivo)
   |
   v
-Algun campo monitorizado cambio? (watched-fields.ts)
+Algun campo monitorizado cambio? (domain/watched-fields.ts)
   |-- No --> Ignorar
   |-- Si --> Continuar
   |
   v
-Es una tabla de Supplier? (ctercero o gproveed)
-  |-- Si --> Construir payload Supplier (ctercero + gproveed)
+TABLE_TO_PAYLOADS: que payload types alimenta esta tabla?
   |
-Es una tabla de Contact? (ctercero, gproveed o cterdire)
-  |-- Si --> Construir payload SupplierContact (ctercero + gproveed + cterdire)
+  v
+PayloadRegistry: ejecutar builder para cada type
   |
   v
 Payload construido?
-  |-- Si --> Log (futuro: enviar a API REST)
+  |-- Si --> PayloadDispatcher.dispatch() (actualmente LogDispatcher)
   |-- No --> Encolar en pending-buffer para reintento (max 5 retries, 60s TTL)
 ```
 
 ## Campos monitorizados
 
-Solo se procesan cambios cuando estos campos especificos se modifican:
+Solo se procesan cambios cuando estos campos especificos se modifican. Definidos en `domain/table-registry.ts`:
 
 | Tabla | Campos |
 |---|---|
@@ -286,15 +331,17 @@ Usar el Dockerfile directamente con `CMD ["node", "dist/index.js"]` (sin el over
 |---|---|---|
 | `KAFKA_BROKERS` | `kafka:29092` | Bootstrap servers de Kafka |
 | `KAFKA_GROUP_ID` | `informix-consumer` | Consumer group ID |
-| `KAFKA_TOPICS` | `ctercero,cterdire,gproveed` | Topics a consumir (comma-separated) |
+| `KAFKA_TOPICS` | (derivado del registry) | Topics a consumir (comma-separated) |
 | `KAFKA_AUTO_OFFSET_RESET` | `earliest` | Offset reset policy |
 | `LOG_LEVEL` | `info` | Nivel de log pino (`debug`, `info`, `warn`, `error`, `fatal`) |
+| `HTTP_PORT` | `3001` | Puerto para futuro servidor HTTP |
+| `HTTP_ENABLED` | `false` | Habilitar servidor HTTP |
 
 **Nota sobre LOG_LEVEL**: Con `info` solo se loguean metadatos (tabla, operacion, campos cambiados, codigo). Con `debug` se incluyen payloads completos y valores PII (nombres, NIFs, direcciones). Usar `debug` solo en desarrollo. Cambiar `LOG_LEVEL` requiere recrear el container (`docker compose up -d consumer`).
 
 ## Topics Kafka
 
-Los topics siguen el patron `informix.informix.{tabla}`:
+Los topics siguen el patron `informix.informix.{tabla}` y se derivan automaticamente del `TABLE_REGISTRY`:
 
 | Topic | Tabla Informix |
 |---|---|
@@ -335,7 +382,8 @@ Nota: los campos `CHAR` de Informix vienen con espacios al final (padding). El c
 
 ## Proximos pasos
 
-1. Añadir cliente HTTP para enviar payloads a la API REST destino
+1. Implementar `HttpDispatcher` para enviar payloads a la API REST destino
 2. Manejo de reintentos HTTP y dead letter queue
-3. Filtrado por tipo de operacion si es necesario
-4. Alertas en Grafana (errores sostenidos, pending buffer creciendo)
+3. Implementar servidor HTTP en `http/server.ts` (webhooks + health endpoint)
+4. Filtrado por tipo de operacion si es necesario
+5. Alertas en Grafana (errores sostenidos, pending buffer creciendo)
