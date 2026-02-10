@@ -1,25 +1,27 @@
 import { loadConfig } from "./config";
 import { createConsumer } from "./consumer";
 import { stopRetryLoop } from "./pending-buffer";
+import { logger } from "./logger";
 
 async function main() {
   const config = loadConfig();
 
-  console.log("[App] Starting Informix CDC Consumer...");
-  console.log(`[App] Topics: ${config.kafka.topics.join(", ")}`);
+  logger.info({ topics: config.kafka.topics }, "Starting Informix CDC Consumer");
 
   const consumer = await createConsumer(config);
 
   const shutdown = async (signal: string) => {
-    console.log(`\n[App] Received ${signal}, shutting down...`);
+    logger.info({ signal }, "Received shutdown signal");
+    let exitCode = 0;
     try {
       stopRetryLoop();
       await consumer.disconnect();
-      console.log("[App] Consumer disconnected.");
+      logger.info("Consumer disconnected");
     } catch (err) {
-      console.error("[App] Error during shutdown:", err);
+      logger.error({ err }, "Error during shutdown");
+      exitCode = 1;
     }
-    process.exit(0);
+    process.exit(exitCode);
   };
 
   process.on("SIGINT", () => shutdown("SIGINT"));
@@ -27,6 +29,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error("[App] Fatal error:", err);
+  logger.fatal({ err }, "Fatal error");
   process.exit(1);
 });

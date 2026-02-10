@@ -1,4 +1,5 @@
 import { getCtercero, getGproveed } from "./store";
+import { logger } from "./logger";
 
 export interface Supplier {
   IdSupplier: string;
@@ -20,8 +21,9 @@ export function buildSupplierPayload(
   const gproveed = getGproveed(codigo);
 
   if (!ctercero || !gproveed) {
-    console.log(
-      `[Supplier] Incomplete data for codigo=${codigo} (ctercero: ${!!ctercero}, gproveed: ${!!gproveed})`
+    logger.info(
+      { tag: "Supplier", codigo, hasCtercero: !!ctercero, hasGproveed: !!gproveed },
+      "Incomplete data for supplier payload"
     );
     return null;
   }

@@ -1,6 +1,6 @@
 # Informix CDC Consumer
 
-Consumer Kafka en Node.js + TypeScript que lee eventos CDC de Informix generados por Debezium, detecta cambios en campos concretos y construye payloads JSON para enviar a una API REST.
+Consumer Kafka en Node.js + TypeScript que lee eventos CDC de Informix generados por Debezium, detecta cambios en campos concretos y construye payloads JSON para enviar a una API REST. Incluye stack de monitoring con Grafana + Loki para visualizacion en tiempo real.
 
 ## Arquitectura general
 
@@ -10,6 +10,10 @@ Informix DB
     | (Change Data Capture)
     v
 Debezium Server  -->  Kafka  -->  [este consumer]  -->  API REST (futuro)
+                                        |
+                                   pino (JSON stdout)
+                                        |
+                                   Promtail --> Loki --> Grafana (:3000)
 ```
 
 Forma parte del stack CDC de Fedefarma pero se despliega de forma independiente. Se conecta a la red Docker del stack principal (`informix-debezium_default`) para alcanzar Kafka.
@@ -70,19 +74,31 @@ Porque Kafka conserva todo el historico de mensajes. El consumer re-lee el histo
 informix-consumer/
 ├── package.json
 ├── tsconfig.json
-├── Dockerfile            # Multi-stage: build TS + runtime Node
-├── docker-compose.yml    # Despliegue con hot-reload
+├── Dockerfile               # Multi-stage: build TS + runtime Node
+├── docker-compose.yml       # Consumer + Loki + Promtail + Grafana
 ├── .dockerignore
 ├── .gitignore
+├── monitoring/
+│   ├── loki-config.yml              # Loki: storage, retention 7d, schema v13
+│   ├── promtail-config.yml          # Promtail: Docker SD, label filter
+│   └── grafana/
+│       ├── provisioning/
+│       │   ├── datasources/loki.yml # Datasource auto-provisionado
+│       │   └── dashboards/dashboard.yml
+│       └── dashboards/
+│           └── informix-consumer.json  # Dashboard pre-construido (5 paneles)
 └── src/
-    ├── index.ts          # Entry point + graceful shutdown
-    ├── config.ts         # Variables de entorno con defaults
-    ├── consumer.ts       # Logica del consumer Kafka + orquestacion
-    ├── store.ts          # Cache en memoria (Maps por tabla)
-    ├── supplier.ts       # Construccion del payload Supplier
-    ├── watched-fields.ts # Campos monitorizados + deteccion de cambios
+    ├── index.ts             # Entry point + graceful shutdown
+    ├── config.ts            # Variables de entorno con defaults
+    ├── logger.ts            # Instancia pino (JSON structured logging)
+    ├── consumer.ts          # Logica del consumer Kafka + orquestacion
+    ├── store.ts             # Cache en memoria (Maps por tabla)
+    ├── supplier.ts          # Construccion del payload Supplier
+    ├── supplier-contact.ts  # Construccion del payload SupplierContact
+    ├── pending-buffer.ts    # Reintentos para payloads con datos incompletos
+    ├── watched-fields.ts    # Campos monitorizados + deteccion de cambios
     └── types/
-        └── debezium.ts   # Tipos para eventos CDC de Debezium
+        └── debezium.ts      # Tipos para eventos CDC de Debezium
 ```
 
 ## Flujo del consumer (paso a paso)
@@ -108,16 +124,15 @@ Algun campo monitorizado cambio? (watched-fields.ts)
   |
   v
 Es una tabla de Supplier? (ctercero o gproveed)
-  |-- No --> Ignorar (por ahora, futuro: cterdire para otro endpoint)
-  |-- Si --> Construir payload Supplier
+  |-- Si --> Construir payload Supplier (ctercero + gproveed)
+  |
+Es una tabla de Contact? (ctercero, gproveed o cterdire)
+  |-- Si --> Construir payload SupplierContact (ctercero + gproveed + cterdire)
   |
   v
-Buscar datos en store por "codigo":
-  - ctercero: nombre, cif
-  - gproveed: fecalt, fecbaj
-  |
-  v
-Construir JSON Supplier --> Log (futuro: enviar a API REST)
+Payload construido?
+  |-- Si --> Log (futuro: enviar a API REST)
+  |-- No --> Encolar en pending-buffer para reintento (max 5 retries, 60s TTL)
 ```
 
 ## Campos monitorizados
@@ -130,9 +145,11 @@ Solo se procesan cambios cuando estos campos especificos se modifican:
 | `gproveed` | `fecalt`, `fecbaj` |
 | `cterdire` | `direcc`, `poblac`, `codnac`, `codpos`, `telef1`, `email` |
 
-## Payload Supplier (ejemplo)
+## Payloads
 
-Cuando se detecta un cambio en `ctercero` o `gproveed`, se construye:
+### Supplier
+
+Se construye cuando cambia `ctercero` o `gproveed`. Cruza datos de ambas tablas por `codigo`.
 
 ```json
 {
@@ -149,8 +166,6 @@ Cuando se detecta un cambio en `ctercero` o `gproveed`, se construye:
 }
 ```
 
-Origen de cada campo:
-
 | Campo | Origen | Notas |
 |---|---|---|
 | `IdSupplier` | `ctercero.codigo` + sufijo | Placeholder, se definira formato final |
@@ -159,6 +174,50 @@ Origen de cada campo:
 | `NIF` | `ctercero.cif` | Trimmed |
 | `StartDate` | `gproveed.fecalt` | Debezium envia dias desde epoch, se convierte a YYYY-MM-DD |
 | `Status` | `gproveed.fecbaj` | `null` = ACTIVO, con valor = BAJA |
+
+### SupplierContact
+
+Se construye cuando cambia `ctercero`, `gproveed` o `cterdire`. Genera una entrada por cada direccion del proveedor.
+
+```json
+{
+  "Suppliers_Contacts": [
+    {
+      "IdSupplier": "P01881-FC-UUID",
+      "Name": "KONCARE BIOTECH SL.",
+      "NIF": "B19325638",
+      "Address": "CALLE RIO MANZANARES 1359",
+      "City": "EL CASAR GUADALAJARA",
+      "Country": "ESP",
+      "Postal_Code": "19170",
+      "Phone": "",
+      "E_Mail": "pedidos@koncare.es",
+      "Status": "ACTIVO"
+    }
+  ]
+}
+```
+
+| Campo | Origen | Notas |
+|---|---|---|
+| `IdSupplier` | `ctercero.codigo` + sufijo | Placeholder |
+| `Name` | `ctercero.nombre` | Trimmed |
+| `NIF` | `ctercero.cif` | Trimmed |
+| `Address` | `cterdire.direcc` | Una entrada por direccion |
+| `City` | `cterdire.poblac` | |
+| `Country` | `cterdire.codnac` | Codigo pais (ej: ESP) |
+| `Postal_Code` | `cterdire.codpos` | |
+| `Phone` | `cterdire.telef1` | |
+| `E_Mail` | `cterdire.email` | |
+| `Status` | `gproveed.fecbaj` | `null` = ACTIVO, con valor = BAJA |
+
+### Pending buffer
+
+Si al construir un payload faltan datos (ej: llega un evento de `cterdire` pero aun no se ha recibido `ctercero` para ese `codigo`), el codigo se encola en un buffer de reintentos:
+
+- Reintento cada 2 segundos
+- Maximo 5 reintentos o 60 segundos de antiguedad
+- Capacidad maxima: 10.000 entradas (evicta las mas antiguas)
 
 ## Requisitos previos
 
@@ -174,11 +233,48 @@ docker compose up -d
 ### Desarrollo (con hot-reload)
 
 ```bash
+# Levantar consumer + monitoring stack
 docker compose up -d --build
-docker compose logs -f
+
+# Ver logs del consumer
+docker compose logs -f consumer
 ```
 
 El `docker-compose.yml` monta `./src` como volumen y usa `tsx --watch`. Los cambios en codigo se aplican automaticamente sin rebuild.
+
+### Monitoring (Grafana)
+
+Abrir `http://localhost:3000` en el navegador. Login: anonymous (viewer) o admin/admin.
+
+El dashboard "Informix Consumer" se provisiona automaticamente con 5 paneles:
+
+1. **Log stream** - Timeline de todos los logs (filtrable por tag)
+2. **CDC events/min** - Rate de eventos por tabla (timeseries)
+3. **Errors** - Logs de nivel error/fatal
+4. **Store rebuild progress** - Progreso de la reconstruccion del store
+5. **Pending buffer** - Reintentos y codigos descartados
+
+Queries utiles en Grafana Explore:
+
+```
+# Todos los logs
+{container="informix-consumer"}
+
+# Solo eventos CDC
+{container="informix-consumer"} | json | tag = `CDC`
+
+# Solo errores (pino level 50=error, 60=fatal)
+{container="informix-consumer"} | json | level >= 50
+
+# Buscar texto en cualquier campo (ej: nombre de proveedor)
+{container="informix-consumer"} |= `BIOTECH`
+
+# Ver payloads Supplier completos (requiere LOG_LEVEL=debug)
+{container="informix-consumer"} | json | msg = "Supplier payload details"
+
+# Ver payloads SupplierContact completos (requiere LOG_LEVEL=debug)
+{container="informix-consumer"} | json | msg = "SupplierContact payload details"
+```
 
 ### Produccion
 
@@ -192,6 +288,9 @@ Usar el Dockerfile directamente con `CMD ["node", "dist/index.js"]` (sin el over
 | `KAFKA_GROUP_ID` | `informix-consumer` | Consumer group ID |
 | `KAFKA_TOPICS` | `ctercero,cterdire,gproveed` | Topics a consumir (comma-separated) |
 | `KAFKA_AUTO_OFFSET_RESET` | `earliest` | Offset reset policy |
+| `LOG_LEVEL` | `info` | Nivel de log pino (`debug`, `info`, `warn`, `error`, `fatal`) |
+
+**Nota sobre LOG_LEVEL**: Con `info` solo se loguean metadatos (tabla, operacion, campos cambiados, codigo). Con `debug` se incluyen payloads completos y valores PII (nombres, NIFs, direcciones). Usar `debug` solo en desarrollo. Cambiar `LOG_LEVEL` requiere recrear el container (`docker compose up -d consumer`).
 
 ## Topics Kafka
 
@@ -230,11 +329,13 @@ Nota: los campos `CHAR` de Informix vienen con espacios al final (padding). El c
 - **Runtime**: Node.js 20
 - **Lenguaje**: TypeScript 5
 - **Cliente Kafka**: `@confluentinc/kafka-javascript` (basado en librdkafka, API compatible KafkaJS)
+- **Logging**: `pino` (JSON estructurado, zero-dep)
+- **Monitoring**: Grafana 11.5 + Loki 3.4 + Promtail 3.4
 - **Plataforma Docker**: `linux/amd64` (requerido por librdkafka en Apple Silicon)
 
 ## Proximos pasos
 
-1. Enviar payload Supplier a la API REST destino
-2. Construir segundo payload con datos de `cterdire` (direcciones)
-3. Cliente HTTP con reintentos
-4. Dead letter queue para mensajes fallidos
+1. Añadir cliente HTTP para enviar payloads a la API REST destino
+2. Manejo de reintentos HTTP y dead letter queue
+3. Filtrado por tipo de operacion si es necesario
+4. Alertas en Grafana (errores sostenidos, pending buffer creciendo)

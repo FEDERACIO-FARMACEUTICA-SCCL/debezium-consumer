@@ -1,10 +1,11 @@
 import { getCtercero, getGproveed, getCterdire, StoreRecord } from "./store";
+import { logger } from "./logger";
 
 export interface SupplierContact {
   IdSupplier: string;
   Name: string;
   NIF: string;
-  Adress: string;
+  Address: string;
   City: string;
   Country: string;
   Postal_Code: string;
@@ -25,15 +26,17 @@ export function buildSupplierContactPayload(
   const direcciones = getCterdire(codigo);
 
   if (!ctercero || !gproveed) {
-    console.log(
-      `[SupplierContact] Incomplete data for codigo=${codigo} (ctercero: ${!!ctercero}, gproveed: ${!!gproveed})`
+    logger.info(
+      { tag: "SupplierContact", codigo, hasCtercero: !!ctercero, hasGproveed: !!gproveed },
+      "Incomplete data for contact payload"
     );
     return null;
   }
 
   if (direcciones.length === 0) {
-    console.log(
-      `[SupplierContact] No addresses found for codigo=${codigo}`
+    logger.info(
+      { tag: "SupplierContact", codigo },
+      "No addresses found"
     );
     return null;
   }
@@ -47,7 +50,7 @@ export function buildSupplierContactPayload(
     IdSupplier: `${codigo}-FC-UUID`,
     Name: name,
     NIF: nif,
-    Adress: trimStr(dir["direcc"]),
+    Address: trimStr(dir["direcc"]),
     City: trimStr(dir["poblac"]),
     Country: trimStr(dir["codnac"]),
     Postal_Code: trimStr(dir["codpos"]),

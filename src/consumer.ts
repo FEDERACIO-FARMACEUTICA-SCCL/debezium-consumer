@@ -6,6 +6,7 @@ import { updateStore, getStoreStats } from "./store";
 import { buildSupplierPayload } from "./supplier";
 import { buildSupplierContactPayload } from "./supplier-contact";
 import { addPending, startRetryLoop } from "./pending-buffer";
+import { logger } from "./logger";
 
 // Tables that feed each payload
 const SUPPLIER_TABLES = new Set(["ctercero", "gproveed"]);
@@ -30,15 +31,15 @@ export async function createConsumer(config: AppConfig) {
   });
 
   await consumer.connect();
-  console.log(`[Consumer] Connected to Kafka at ${config.kafka.brokers}`);
+  logger.info({ broker: config.kafka.brokers }, "Connected to Kafka");
 
   await consumer.subscribe({
     topics: config.kafka.topics,
   });
-  console.log(
-    `[Consumer] Subscribed to topics: ${config.kafka.topics.join(", ")}`
+  logger.info(
+    { topics: config.kafka.topics, groupId: ephemeralGroupId },
+    "Subscribed to topics (ephemeral group, reads from beginning)"
   );
-  console.log(`[Consumer] Using ephemeral group: ${ephemeralGroupId} (reads from beginning)`);
 
   // Start retry loop for incomplete payloads (queued codigos retried periodically)
   startRetryLoop(config);
@@ -61,9 +62,9 @@ export async function createConsumer(config: AppConfig) {
         const payload = raw.payload ?? raw;
 
         if (!payload.op || !payload.source) {
-          console.log(
-            `[Consumer] Non-CDC message on ${topic}:`,
-            JSON.stringify(raw).slice(0, 200)
+          logger.debug(
+            { tag: "Consumer", topic, raw: JSON.stringify(raw).slice(0, 200) },
+            "Non-CDC message (skipped)"
           );
           return;
         }
@@ -81,8 +82,9 @@ export async function createConsumer(config: AppConfig) {
           snapshotLogCounter++;
           if (snapshotLogCounter % 1000 === 0) {
             const stats = getStoreStats();
-            console.log(
-              `[Store rebuild] Progress: ${JSON.stringify(stats)} (${snapshotLogCounter} events processed)`
+            logger.info(
+              { tag: "StoreRebuild", stats, eventsProcessed: snapshotLogCounter },
+              "Store rebuild progress"
             );
           }
 
@@ -92,13 +94,15 @@ export async function createConsumer(config: AppConfig) {
           const snapshotFlag = String(event.source.snapshot ?? "false");
           if (snapshotFlag === "last") {
             for (const t of allTopics) topicSnapshotDone.add(t);
-            console.log(
-              `[Store rebuild] All topics snapshot complete (snapshot "last" received on ${topic})`
+            logger.info(
+              { tag: "StoreRebuild", topic },
+              "All topics snapshot complete (snapshot 'last' received)"
             );
           } else if (event.op !== "r" && !topicSnapshotDone.has(topic)) {
             topicSnapshotDone.add(topic);
-            console.log(
-              `[Store rebuild] Topic ${topic} snapshot complete (${topicSnapshotDone.size}/${allTopics.size})`
+            logger.info(
+              { tag: "StoreRebuild", topic, done: topicSnapshotDone.size, total: allTopics.size },
+              "Topic snapshot complete"
             );
           }
 
@@ -106,8 +110,9 @@ export async function createConsumer(config: AppConfig) {
           if (!storeReady && topicSnapshotDone.size >= allTopics.size) {
             storeReady = true;
             const stats = getStoreStats();
-            console.log(
-              `[Store rebuild] Complete: ${JSON.stringify(stats)} (${snapshotLogCounter} events replayed)`
+            logger.info(
+              { tag: "StoreRebuild", stats, eventsReplayed: snapshotLogCounter },
+              "Store rebuild complete"
             );
             snapshotLogCounter = 0;
 
@@ -123,30 +128,28 @@ export async function createConsumer(config: AppConfig) {
           ? new Date(event.ts_ms).toISOString()
           : "N/A";
 
-        console.log(
-          `[CDC] ${label} on ${table} at ${timestamp} (topic: ${topic}, partition: ${partition})`
+        logger.info(
+          { tag: "CDC", op: label, table, timestamp, topic, partition },
+          `${label} on ${table}`
         );
 
         // 2. Check if watched fields changed
         const changes = detectChanges(event);
 
         if (!changes) {
-          console.log(`  No watched fields changed, skipping.`);
+          logger.debug({ tag: "CDC", table }, "No watched fields changed, skipping");
           return;
         }
 
-        console.log(
-          `[WATCH] ${label} on ${changes.table} — ${changes.changedFields.length} field(s) changed:`
-        );
         if (config.logLevel === "debug") {
-          for (const ch of changes.changedFields) {
-            console.log(
-              `  ${ch.field}: ${JSON.stringify(ch.before)} → ${JSON.stringify(ch.after)}`
-            );
-          }
+          logger.debug(
+            { tag: "Watch", op: label, table: changes.table, changes: changes.changedFields },
+            `${changes.changedFields.length} watched field(s) changed`
+          );
         } else {
-          console.log(
-            `  Changed fields: ${changes.changedFields.map((c) => c.field).join(", ")}`
+          logger.info(
+            { tag: "Watch", op: label, table: changes.table, fields: changes.changedFields.map((c) => c.field) },
+            `${changes.changedFields.length} watched field(s) changed`
           );
         }
 
@@ -155,7 +158,7 @@ export async function createConsumer(config: AppConfig) {
         const codigo = String(record?.["codigo"] ?? "").trim();
 
         if (!codigo) {
-          console.log(`  No 'codigo' found in event, skipping payload build.`);
+          logger.debug({ tag: "CDC", table }, "No 'codigo' found in event, skipping payload build");
           return;
         }
 
@@ -163,14 +166,8 @@ export async function createConsumer(config: AppConfig) {
         if (SUPPLIER_TABLES.has(tableLower)) {
           const supplierPayload = buildSupplierPayload(codigo);
           if (supplierPayload) {
-            if (config.logLevel === "debug") {
-              console.log(
-                `[Supplier] Payload:`,
-                JSON.stringify(supplierPayload, null, 2)
-              );
-            } else {
-              console.log(`[Supplier] Payload built for codigo=${codigo}`);
-            }
+            logger.info({ tag: "Supplier", codigo }, "Payload built");
+            logger.debug({ tag: "Supplier", codigo, payload: supplierPayload }, "Supplier payload details");
             // TODO: enviar supplierPayload a la API REST
           } else {
             addPending(codigo, "supplier");
@@ -181,21 +178,15 @@ export async function createConsumer(config: AppConfig) {
         if (CONTACT_TABLES.has(tableLower)) {
           const contactPayload = buildSupplierContactPayload(codigo);
           if (contactPayload) {
-            if (config.logLevel === "debug") {
-              console.log(
-                `[SupplierContact] Payload:`,
-                JSON.stringify(contactPayload, null, 2)
-              );
-            } else {
-              console.log(`[SupplierContact] Payload built for codigo=${codigo}`);
-            }
+            logger.info({ tag: "SupplierContact", codigo }, "Payload built");
+            logger.debug({ tag: "SupplierContact", codigo, payload: contactPayload }, "SupplierContact payload details");
             // TODO: enviar contactPayload a la API REST
           } else {
             addPending(codigo, "contact");
           }
         }
       } catch (err) {
-        console.error(`[Consumer] Error processing message:`, err);
+        logger.error({ tag: "Consumer", topic, err }, "Error processing message");
       }
     },
   });

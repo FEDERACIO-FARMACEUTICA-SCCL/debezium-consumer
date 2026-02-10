@@ -7,13 +7,65 @@ services:
       KAFKA_BROKERS: kafka:29092
       KAFKA_GROUP_ID: informix-consumer
       KAFKA_AUTO_OFFSET_RESET: earliest
-      LOG_LEVEL: info
+#      LOG_LEVEL: info
+      LOG_LEVEL: debug
+    labels:
+      logging: "loki"
     volumes:
       - ./src:/app/src:ro
     command: npx tsx --watch src/index.ts
     networks:
       - debezium-network
     restart: on-failure
+
+  loki:
+    image: grafana/loki:3.4.2
+    container_name: loki
+    ports:
+      - "127.0.0.1:3100:3100"
+    volumes:
+      - ./monitoring/loki-config.yml:/etc/loki/local-config.yaml:ro
+      - loki-data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+    networks:
+      - debezium-network
+    restart: on-failure
+
+  promtail:
+    image: grafana/promtail:3.4.2
+    container_name: promtail
+    volumes:
+      - ./monitoring/promtail-config.yml:/etc/promtail/config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command: -config.file=/etc/promtail/config.yml
+    depends_on:
+      - loki
+    networks:
+      - debezium-network
+    restart: on-failure
+
+  grafana:
+    image: grafana/grafana:11.5.2
+    container_name: grafana
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - loki
+    networks:
+      - debezium-network
+    restart: on-failure
+
+volumes:
+  loki-data:
+  grafana-data:
 
 networks:
   debezium-network:
