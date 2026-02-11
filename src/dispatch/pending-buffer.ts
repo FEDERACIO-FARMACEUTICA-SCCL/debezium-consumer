@@ -17,6 +17,7 @@ const MAX_PENDING_SIZE = 10_000;
 
 const pending = new Map<string, PendingEntry>();
 let timer: ReturnType<typeof setInterval> | null = null;
+let retrying = false;
 
 export function addPending(codigo: string, type: PayloadType): void {
   const existing = pending.get(codigo);
@@ -50,59 +51,63 @@ export function startRetryLoop(
   if (timer) return;
 
   timer = setInterval(async () => {
-    if (pending.size === 0) return;
+    if (retrying || pending.size === 0) return;
+    retrying = true;
+    try {
+      for (const [codigo, entry] of pending) {
+        entry.retries++;
 
-    for (const [codigo, entry] of pending) {
-      entry.retries++;
+        if (
+          entry.retries > MAX_RETRIES ||
+          Date.now() - entry.addedAt > MAX_AGE_MS
+        ) {
+          logger.warn(
+            {
+              tag: "PendingBuffer",
+              codigo,
+              retries: entry.retries,
+              types: [...entry.types],
+            },
+            "Giving up on pending codigo"
+          );
+          pending.delete(codigo);
+          continue;
+        }
 
-      if (
-        entry.retries > MAX_RETRIES ||
-        Date.now() - entry.addedAt > MAX_AGE_MS
-      ) {
-        logger.warn(
-          {
-            tag: "PendingBuffer",
-            codigo,
-            retries: entry.retries,
-            types: [...entry.types],
-          },
-          "Giving up on pending codigo"
-        );
-        pending.delete(codigo);
-        continue;
-      }
+        for (const type of entry.types) {
+          const builder = registry.get(type);
+          if (!builder) continue;
 
-      for (const type of entry.types) {
-        const builder = registry.get(type);
-        if (!builder) continue;
-
-        const payload = builder.build(codigo);
-        if (payload) {
-          const tagMap: Record<string, string> = {
-            supplier: "Supplier",
-            contact: "SupplierContact",
-          };
-          const tag = tagMap[type] ?? type;
-          try {
-            await dispatcher.dispatch(type, codigo, payload);
-            entry.types.delete(type);
-            logger.info({ tag: "PendingBuffer", codigo }, `${tag} retry succeeded`);
-            logger.debug(
-              { tag: "PendingBuffer", codigo, payload },
-              `${tag} retry payload`
-            );
-          } catch (err) {
-            logger.error(
-              { tag: "PendingBuffer", codigo, type, err },
-              `${tag} retry dispatch failed, will retry next cycle`
-            );
+          const payload = builder.build(codigo);
+          if (payload) {
+            const tagMap: Record<string, string> = {
+              supplier: "Supplier",
+              contact: "SupplierContact",
+            };
+            const tag = tagMap[type] ?? type;
+            try {
+              await dispatcher.dispatch(type, codigo, payload);
+              entry.types.delete(type);
+              logger.info({ tag: "PendingBuffer", codigo }, `${tag} retry succeeded`);
+              logger.debug(
+                { tag: "PendingBuffer", codigo, payload },
+                `${tag} retry payload`
+              );
+            } catch (err) {
+              logger.error(
+                { tag: "PendingBuffer", codigo, type, err },
+                `${tag} retry dispatch failed, will retry next cycle`
+              );
+            }
           }
         }
-      }
 
-      if (entry.types.size === 0) {
-        pending.delete(codigo);
+        if (entry.types.size === 0) {
+          pending.delete(codigo);
+        }
       }
+    } finally {
+      retrying = false;
     }
   }, RETRY_INTERVAL_MS);
 }

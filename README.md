@@ -106,6 +106,7 @@ informix-consumer/
     │
     ├── payloads/
     │   ├── payload-builder.ts       # Interface PayloadBuilder + PayloadRegistry
+    │   ├── payload-utils.ts         # Helpers compartidos: trimOrNull, isActive, formatDate
     │   ├── supplier.ts              # SupplierBuilder implements PayloadBuilder
     │   └── supplier-contact.ts      # SupplierContactBuilder implements PayloadBuilder
     │
@@ -130,7 +131,7 @@ informix-consumer/
 |------|-----------|-----------------|
 | **Types** | `types/` | Interfaces compartidas (Debezium events, payload shapes) |
 | **Domain** | `domain/` | Table registry (fuente unica de verdad), store en memoria, deteccion de cambios |
-| **Payloads** | `payloads/` | Builders de payloads (patron Strategy via `PayloadBuilder` interface) |
+| **Payloads** | `payloads/` | Builders de payloads (patron Strategy via `PayloadBuilder` interface) + helpers compartidos (`payload-utils.ts`) |
 | **Kafka** | `kafka/` | Infraestructura Kafka pura, snapshot state machine, orquestacion de mensajes |
 | **Dispatch** | `dispatch/` | Envio de payloads via HTTP (`HttpDispatcher` + `ApiClient`), buffer de reintentos |
 | **HTTP** | `http/` | Trigger API (Fastify): bulk sync/delete endpoints, Swagger UI, health check |
@@ -284,7 +285,9 @@ Si al construir un payload faltan datos (ej: llega un evento de `cterdire` pero 
 
 - Reintento cada 2 segundos
 - Maximo 5 reintentos o 60 segundos de antiguedad
-- Capacidad maxima: 10.000 entradas (evicta las mas antiguas)
+- Capacidad maxima: 10.000 entradas (evicta las mas antiguas con warning)
+- Anti-overlap: un flag `retrying` impide que un nuevo ciclo de `setInterval` arranque mientras el anterior sigue ejecutando dispatches async
+- Los dispatch se hacen con `await` + try/catch; un fallo en un tipo no bloquea los demas
 
 ## Trigger API (bulk sync/delete)
 
@@ -526,6 +529,17 @@ Nota: los campos `CHAR` de Informix vienen con espacios al final (padding). El c
 - **Logging**: `pino` (JSON estructurado, zero-dep)
 - **Monitoring**: Grafana 11.5 + Loki 3.4 + Promtail 3.4
 - **Plataforma Docker**: `linux/amd64` (requerido por librdkafka en Apple Silicon)
+
+## Seguridad y resiliencia
+
+- **Auth timing-safe**: La Trigger API compara el Bearer token con `crypto.timingSafeEqual` (previene timing attacks)
+- **HTTP timeout**: Todas las llamadas al Ingest API usan `AbortSignal.timeout(30_000)` — sin posibilidad de hang indefinido
+- **Token refresh dedup**: Si varias llamadas concurrentes detectan token expirado, `authPromise` garantiza una sola peticion de autenticacion
+- **Error body a debug**: Los bodies de error de la API se loguean solo a nivel `debug`, evitando leaks de informacion sensible en produccion
+- **Shutdown con timeout**: `Promise.race` entre shutdown graceful y un timeout de 10s — si `consumer.disconnect()` se bloquea, el proceso sale igualmente
+- **Schema validation**: `CodSupplier` en el body de los triggers tiene `maxItems: 10_000` y `maxLength: 50` por item (Fastify valida automaticamente)
+- **Docker resource limits**: Todos los servicios tienen limites de memoria y CPU para evitar que un servicio desbocado consuma todos los recursos del host
+- **Dockerfile produccion**: `npm ci --omit=dev` (sin devDependencies), `USER node` (no root)
 
 ## Proximos pasos
 

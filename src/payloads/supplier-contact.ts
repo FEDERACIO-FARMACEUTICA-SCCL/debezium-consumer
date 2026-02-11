@@ -3,6 +3,7 @@ import { toISO2 } from "../domain/country-codes";
 import { logger } from "../logger";
 import { SupplierContact, PayloadType } from "../types/payloads";
 import { PayloadBuilder } from "./payload-builder";
+import { trimOrNull, isActive } from "./payload-utils";
 
 export class SupplierContactBuilder
   implements PayloadBuilder<SupplierContact[]>
@@ -53,14 +54,4 @@ export class SupplierContactBuilder
 
     return contacts;
   }
-}
-
-function isActive(fecbaj: unknown): boolean {
-  return fecbaj == null || String(fecbaj).trim() === "";
-}
-
-function trimOrNull(value: unknown): string | null {
-  if (value == null) return null;
-  const trimmed = String(value).trim();
-  return trimmed || null;
 }

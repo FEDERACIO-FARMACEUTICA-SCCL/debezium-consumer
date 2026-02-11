@@ -60,14 +60,21 @@ async function main() {
   startRetryLoop(registry, dispatcher);
 
   // 9. Graceful shutdown
+  const SHUTDOWN_TIMEOUT_MS = 10_000;
   const shutdown = async (signal: string) => {
     logger.info({ signal }, "Received shutdown signal");
     let exitCode = 0;
     try {
-      stopRetryLoop();
-      if (server) await server.close();
-      await consumer.disconnect();
-      logger.info("Consumer disconnected");
+      const graceful = async () => {
+        stopRetryLoop();
+        if (server) await server.close();
+        await consumer.disconnect();
+        logger.info("Consumer disconnected");
+      };
+      const timeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("Shutdown timed out")), SHUTDOWN_TIMEOUT_MS)
+      );
+      await Promise.race([graceful(), timeout]);
     } catch (err) {
       logger.error({ err }, "Error during shutdown");
       exitCode = 1;

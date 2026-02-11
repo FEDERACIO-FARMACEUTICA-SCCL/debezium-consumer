@@ -44,7 +44,8 @@ const TriggerBody = {
   properties: {
     CodSupplier: {
       type: "array",
-      items: { type: "string" },
+      items: { type: "string", maxLength: 50 },
+      maxItems: 10_000,
       description:
         "Optional list of supplier codes to process. If omitted, all codes are processed.",
     },

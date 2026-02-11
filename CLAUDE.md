@@ -61,6 +61,7 @@ src/
 
   payloads/
     payload-builder.ts          # Interface PayloadBuilder + PayloadRegistry
+    payload-utils.ts            # Helpers compartidos: trimOrNull, isActive, formatDate
     supplier.ts                 # SupplierBuilder implements PayloadBuilder
     supplier-contact.ts         # SupplierContactBuilder implements PayloadBuilder
 
@@ -104,6 +105,9 @@ src/
 - Autenticacion JWT via `POST /ingest-api/token` con `application/x-www-form-urlencoded` (username + password)
 - El `ApiClient` gestiona el ciclo de vida del token: obtiene, cachea, y renueva automaticamente 60s antes de expirar
 - Si una llamada recibe 401, renueva token y reintenta UNA vez
+- Deduplicacion de token refresh: si varias llamadas disparan renovacion simultanea, `authPromise` garantiza una sola peticion
+- Timeout de 30s (`AbortSignal.timeout`) en todas las llamadas HTTP (auth + data)
+- Los bodies de error de la API se loguean a nivel `debug` (no `info`/`error`) para evitar leaks de informacion sensible
 - Env vars requeridas: `INGEST_API_BASE_URL`, `INGEST_API_USERNAME`, `INGEST_API_PASSWORD`
 - Tag de logging: `"API"` — todas las llamadas HTTP quedan visibles en Grafana
 - `LogDispatcher` sigue disponible en el codigo como alternativa para desarrollo sin API
@@ -139,6 +143,23 @@ Resumen por escenario:
 - **Cambio en gproveed.fecbaj** (fecha baja) → Supplier + Contact (Status cambia en ambos)
 - **Cambio en cterdire** → solo Contact (direcciones no afectan a Supplier)
 
+### Pending buffer (reintentos)
+- Guarda codigos con datos incompletos para reintentar cada 2s (max 5 reintentos o 60s TTL)
+- Guarda anti-overlap: flag `retrying` impide que un nuevo ciclo de `setInterval` se solape con uno que aun no ha terminado (dispatch es async)
+- Capacidad maxima 10.000 entradas; al llegar al limite evicta la mas antigua con `logger.warn`
+- Los dispatch se hacen con `await` + try/catch; un fallo en un tipo no bloquea los demas
+
+### Shutdown graceful
+- `Promise.race` entre el shutdown graceful (stopRetryLoop + server.close + consumer.disconnect) y un timeout de 10s
+- Si el timeout gana, se loguea el error y se sale con `exitCode = 1`
+- Evita que un `consumer.disconnect()` bloqueado impida el cierre del proceso
+
+### Payload helpers compartidos (`payloads/payload-utils.ts`)
+- `trimOrNull(value)`: convierte a string, hace trim, devuelve `null` si vacio
+- `isActive(fecbaj)`: `true` si `fecbaj` es null o string vacio (= proveedor activo)
+- `formatDate(value)`: convierte dias-desde-epoch (Debezium) o ISO string a `YYYY-MM-DD`
+- Importados por `SupplierBuilder` y `SupplierContactBuilder` — zero duplicacion
+
 ### Envelope Debezium
 - Los mensajes Kafka de Debezium vienen con formato `{ schema, payload }` cuando se usa JSON sin schema registry
 - El evento CDC real esta en `payload` (con `op`, `source`, `before`, `after`, `ts_ms`)
@@ -153,6 +174,8 @@ Resumen por escenario:
 - El compose monta `./src:/app/src:ro` + `command: npx tsx --watch` para hot-reload sin rebuild
 - Se conecta a red externa `informix-debezium_default` para alcanzar `kafka:29092`
 - El Dockerfile usa `USER node` (uid 1000) para no correr como root en produccion
+- Produccion: `npm ci --omit=dev` (sin devDependencies)
+- Resource limits en docker-compose: consumer 512M/1cpu, loki 512M/1cpu, promtail 256M/0.5cpu, grafana 256M/0.5cpu
 
 ### Logging (pino)
 - Todos los logs salen como JSON estructurado via `pino`. No queda ningun `console.log` en el codigo.
@@ -167,7 +190,9 @@ Los topics siguen el patron `{prefix}.{schema}.{table}` donde prefix=`informix` 
 - Servidor Fastify en puerto 3001 con 4 endpoints de trigger bulk + health check
 - `@fastify/swagger` genera spec OpenAPI 3.0.3; `@fastify/swagger-ui` sirve documentacion interactiva en `/docs`
 - Auth: Bearer token (`TRIGGER_API_KEY`) verificado en hook `onRequest`; se salta `/health` y `/docs*`
+- Auth: comparacion timing-safe con `crypto.timingSafeEqual` (previene timing attacks)
 - Schemas de rutas en `http/schemas.ts`: schemas compartidos (`BulkResultResponse`, `ErrorResponse`, `triggerResponses`, `TriggerBody`) + schemas individuales por ruta
+- `TriggerBody.CodSupplier` tiene limites: `maxItems: 10_000` y `maxLength: 50` por item (Fastify valida automaticamente)
 - `persistAuthorization: true` guarda el token en localStorage entre recargas del Swagger UI
 - Orden de registro critico: swagger → swagger-ui → auth hook → rutas
 - Los 4 endpoints de trigger aceptan un body JSON opcional `{ "CodSupplier": ["P001", "P002"] }` para filtrar por codigos. Sin body se procesan todos.
