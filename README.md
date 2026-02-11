@@ -9,7 +9,7 @@ Informix DB
     |
     | (Change Data Capture)
     v
-Debezium Server  -->  Kafka  -->  [este consumer]  -->  API REST (futuro)
+Debezium Server  -->  Kafka  -->  [este consumer]  -->  Ingest API (PUT)
                                         |
                                    pino (JSON stdout)
                                         |
@@ -58,7 +58,7 @@ Una vez cargado el historico, el consumer queda escuchando cambios en vivo. Cuan
 1. **Actualiza el store** con los nuevos datos
 2. **Detecta si algun campo monitorizado cambio** (ej: `nombre`, `cif`, `fecalt`...)
 3. Si hay cambios relevantes, **construye el payload Supplier** cruzando datos de `ctercero` y `gproveed` usando el campo `codigo` como clave comun
-4. (Futuro) Envia el payload a la API REST via `PayloadDispatcher`
+4. Envia el payload a la API REST via `HttpDispatcher` → `ApiClient`
 
 ### Por que no necesita conectarse a Informix?
 
@@ -89,7 +89,7 @@ informix-consumer/
 │           └── informix-consumer.json  # Dashboard pre-construido (5 paneles)
 └── src/
     ├── index.ts                     # Composition root: wiring de todos los modulos
-    ├── config.ts                    # Variables de entorno con defaults (kafka + http)
+    ├── config.ts                    # Variables de entorno con defaults (kafka + api + http)
     ├── logger.ts                    # initLogger() + singleton mutable pino
     │
     ├── types/
@@ -114,7 +114,8 @@ informix-consumer/
     │
     ├── dispatch/
     │   ├── pending-buffer.ts        # Reintentos para payloads con datos incompletos
-    │   └── dispatcher.ts            # Interface PayloadDispatcher + LogDispatcher
+    │   ├── dispatcher.ts            # Interface PayloadDispatcher + HttpDispatcher + LogDispatcher
+    │   └── http-client.ts           # ApiClient: JWT auth + renovacion automatica + HTTP calls
     │
     └── http/
         └── server.ts               # Placeholder para futuro servidor HTTP
@@ -128,7 +129,7 @@ informix-consumer/
 | **Domain** | `domain/` | Table registry (fuente unica de verdad), store en memoria, deteccion de cambios |
 | **Payloads** | `payloads/` | Builders de payloads (patron Strategy via `PayloadBuilder` interface) |
 | **Kafka** | `kafka/` | Infraestructura Kafka pura, snapshot state machine, orquestacion de mensajes |
-| **Dispatch** | `dispatch/` | Envio de payloads (`PayloadDispatcher` interface), buffer de reintentos |
+| **Dispatch** | `dispatch/` | Envio de payloads via HTTP (`HttpDispatcher` + `ApiClient`), buffer de reintentos |
 | **HTTP** | `http/` | Futuro servidor HTTP para webhooks y health checks |
 
 ### Como añadir un nuevo payload type
@@ -178,7 +179,7 @@ PayloadRegistry: ejecutar builder para cada type resultante
   |
   v
 Payload construido?
-  |-- Si --> PayloadDispatcher.dispatch() (actualmente LogDispatcher)
+  |-- Si --> HttpDispatcher.dispatch() --> ApiClient.request() --> API externa
   |-- No --> Encolar en pending-buffer para reintento (max 5 retries, 60s TTL)
 ```
 
@@ -337,6 +338,18 @@ Queries utiles en Grafana Explore:
 
 # Ver payloads SupplierContact completos (requiere LOG_LEVEL=debug)
 {container="informix-consumer"} | json | msg = "SupplierContact payload details"
+
+# Llamadas a la API externa
+{container="informix-consumer"} | json | tag = `API`
+
+# Errores API
+{container="informix-consumer"} | json | tag = `API` | level >= 50
+
+# Autenticaciones JWT
+{container="informix-consumer"} | json | tag = `API` | action = `authenticate`
+
+# Llamadas API lentas (>1s)
+{container="informix-consumer"} | json | tag = `API` | durationMs > 1000
 ```
 
 ### Produccion
@@ -351,6 +364,9 @@ Usar el Dockerfile directamente con `CMD ["node", "dist/index.js"]` (sin el over
 | `KAFKA_GROUP_ID` | `informix-consumer` | Consumer group ID |
 | `KAFKA_TOPICS` | (derivado del registry) | Topics a consumir (comma-separated) |
 | `KAFKA_AUTO_OFFSET_RESET` | `earliest` | Offset reset policy |
+| `INGEST_API_BASE_URL` | **(requerido)** | URL base de la Ingest API (ej: `https://api.example.com`) |
+| `INGEST_API_USERNAME` | **(requerido)** | Usuario para autenticacion JWT |
+| `INGEST_API_PASSWORD` | **(requerido)** | Password para autenticacion JWT |
 | `LOG_LEVEL` | `info` | Nivel de log pino (`debug`, `info`, `warn`, `error`, `fatal`) |
 | `HTTP_PORT` | `3001` | Puerto para futuro servidor HTTP |
 | `HTTP_ENABLED` | `false` | Habilitar servidor HTTP |
@@ -400,7 +416,7 @@ Nota: los campos `CHAR` de Informix vienen con espacios al final (padding). El c
 
 ## Proximos pasos
 
-1. Implementar `HttpDispatcher` para enviar payloads a la API REST destino
+1. ~~Implementar `HttpDispatcher` para enviar payloads a la API REST destino~~ ✓
 2. Manejo de reintentos HTTP y dead letter queue
 3. Implementar servidor HTTP en `http/server.ts` (webhooks + health endpoint)
 4. Filtrado por tipo de operacion si es necesario

@@ -9,6 +9,9 @@ services:
       KAFKA_AUTO_OFFSET_RESET: earliest
 #      LOG_LEVEL: info
       LOG_LEVEL: debug
+      INGEST_API_BASE_URL: ${INGEST_API_BASE_URL}
+      INGEST_API_USERNAME: ${INGEST_API_USERNAME}
+      INGEST_API_PASSWORD: ${INGEST_API_PASSWORD}
     labels:
       logging: "loki"
     volumes:

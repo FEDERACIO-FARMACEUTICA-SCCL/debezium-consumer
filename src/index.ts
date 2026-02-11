@@ -6,7 +6,8 @@ import { SupplierContactBuilder } from "./payloads/supplier-contact";
 import { SnapshotTracker } from "./kafka/snapshot-tracker";
 import { createMessageHandler } from "./kafka/message-handler";
 import { createKafkaConsumer } from "./kafka/consumer";
-import { LogDispatcher } from "./dispatch/dispatcher";
+import { HttpDispatcher } from "./dispatch/dispatcher";
+import { ApiClient } from "./dispatch/http-client";
 import { startRetryLoop, stopRetryLoop } from "./dispatch/pending-buffer";
 
 async function main() {
@@ -23,8 +24,9 @@ async function main() {
   registry.register(new SupplierBuilder());
   registry.register(new SupplierContactBuilder());
 
-  // 4. Dispatcher (log-only for now; swap with HttpDispatcher later)
-  const dispatcher = new LogDispatcher();
+  // 4. API client + Dispatcher
+  const apiClient = new ApiClient(config.api);
+  const dispatcher = new HttpDispatcher(apiClient);
 
   // 5. Snapshot tracker
   const snapshotTracker = new SnapshotTracker(config.kafka.topics);

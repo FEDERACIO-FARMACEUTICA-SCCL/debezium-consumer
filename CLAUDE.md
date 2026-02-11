@@ -35,6 +35,10 @@ open http://localhost:3000
 # Buscar texto en logs:  {container="informix-consumer"} |= `BIOTECH`
 # Payloads Supplier:     {container="informix-consumer"} | json | msg = "Supplier payload details"
 # Payloads Contact:      {container="informix-consumer"} | json | msg = "SupplierContact payload details"
+# Llamadas API:          {container="informix-consumer"} | json | tag = `API`
+# Errores API:           {container="informix-consumer"} | json | tag = `API` | level >= 50
+# Autenticaciones:       {container="informix-consumer"} | json | tag = `API` | action = `authenticate`
+# Llamadas lentas:       {container="informix-consumer"} | json | tag = `API` | durationMs > 1000
 ```
 
 ## Arquitectura del codigo
@@ -42,7 +46,7 @@ open http://localhost:3000
 ```
 src/
   index.ts                      # Composition root: wiring de todos los modulos
-  config.ts                     # Configuracion (kafka + http placeholder)
+  config.ts                     # Configuracion (kafka + api + http)
   logger.ts                     # initLogger() + singleton mutable
 
   types/
@@ -67,7 +71,8 @@ src/
 
   dispatch/
     pending-buffer.ts           # Buffer de reintentos para codigos con datos incompletos
-    dispatcher.ts               # Interface PayloadDispatcher + LogDispatcher
+    dispatcher.ts               # Interface PayloadDispatcher + LogDispatcher + HttpDispatcher
+    http-client.ts              # ApiClient con auth JWT + renovacion automatica
 
   http/
     server.ts                   # Placeholder para futuro servidor HTTP
@@ -79,7 +84,7 @@ src/
 2. `kafka/message-handler.ts` parsea el envelope Debezium, actualiza el store, consulta el snapshot tracker
 3. Para eventos live CDC: detecta cambios en watched fields, calcula payload types a nivel de campo via `FIELD_TO_PAYLOADS`
 4. `payloads/supplier.ts` y `payloads/supplier-contact.ts` construyen payloads desde el store
-5. `dispatch/dispatcher.ts` recibe el payload construido (actualmente solo loguea)
+5. `dispatch/dispatcher.ts` envia el payload via `HttpDispatcher` → `ApiClient` → API externa
 6. Si un builder retorna null, el codigo va al `pending-buffer` para reintentos
 
 ### Como añadir un nuevo payload type
@@ -92,6 +97,15 @@ src/
 **Zero cambios** en consumer, message handler, pending buffer, store o watched fields.
 
 ## Detalles tecnicos importantes
+
+### API externa (Ingest API)
+- `HttpDispatcher` envia payloads al endpoint `PUT /ingest-api/suppliers` (y en el futuro `/ingest-api/suppliers-contacts`)
+- Autenticacion JWT via `POST /ingest-api/token` con `application/x-www-form-urlencoded` (username + password)
+- El `ApiClient` gestiona el ciclo de vida del token: obtiene, cachea, y renueva automaticamente 60s antes de expirar
+- Si una llamada recibe 401, renueva token y reintenta UNA vez
+- Env vars requeridas: `INGEST_API_BASE_URL`, `INGEST_API_USERNAME`, `INGEST_API_PASSWORD`
+- Tag de logging: `"API"` — todas las llamadas HTTP quedan visibles en Grafana
+- `LogDispatcher` sigue disponible en el codigo como alternativa para desarrollo sin API
 
 ### Cliente Kafka
 - Se usa `@confluentinc/kafka-javascript`, NO `kafkajs`. La API es compatible pero con diferencias:
@@ -176,7 +190,7 @@ Volumes Docker: `loki-data`, `grafana-data` (persistencia entre reinicios).
 
 ## Proximos pasos previstos
 
-1. Implementar `HttpDispatcher` para enviar payloads transformados a la API destino
+1. ~~Implementar `HttpDispatcher` para enviar payloads transformados a la API destino~~ ✓
 2. Manejo de reintentos HTTP y dead letter queue
 3. Implementar servidor HTTP en `http/server.ts` (webhooks + health endpoint)
 4. Filtrado por tipo de operacion si es necesario
