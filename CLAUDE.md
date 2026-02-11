@@ -75,7 +75,8 @@ src/
     http-client.ts              # ApiClient con auth JWT + renovacion automatica
 
   http/
-    server.ts                   # Placeholder para futuro servidor HTTP
+    server.ts                   # Fastify server: Trigger API + Swagger UI + health check
+    schemas.ts                  # JSON Schemas OpenAPI para todas las rutas
 ```
 
 ### Flujo de datos
@@ -162,6 +163,25 @@ Resumen por escenario:
 ### Topics
 Los topics siguen el patron `{prefix}.{schema}.{table}` donde prefix=`informix` (configurado en Debezium como `topic.prefix`). No incluyen el nombre de la base de datos en el path. Los topics default se derivan automaticamente de `ALL_TOPICS` en el table registry.
 
+### Trigger API (Fastify + Swagger)
+- Servidor Fastify en puerto 3001 con 4 endpoints de trigger bulk + health check
+- `@fastify/swagger` genera spec OpenAPI 3.0.3; `@fastify/swagger-ui` sirve documentacion interactiva en `/docs`
+- Auth: Bearer token (`TRIGGER_API_KEY`) verificado en hook `onRequest`; se salta `/health` y `/docs*`
+- Schemas de rutas en `http/schemas.ts`: schemas compartidos (`BulkResultResponse`, `ErrorResponse`, `triggerResponses`) + schemas individuales por ruta
+- `persistAuthorization: true` guarda el token en localStorage entre recargas del Swagger UI
+- Orden de registro critico: swagger → swagger-ui → auth hook → rutas
+
+| URL | Auth | Proposito |
+|---|---|---|
+| `/docs` | No | Swagger UI interactivo |
+| `/docs/json` | No | OpenAPI spec JSON |
+| `/docs/yaml` | No | OpenAPI spec YAML |
+| `/health` | No | Health check |
+| `/triggers/sync/suppliers` | Bearer | Sync bulk de suppliers |
+| `/triggers/sync/contacts` | Bearer | Sync bulk de contacts |
+| `/triggers/delete/suppliers` | Bearer | Delete bulk de suppliers |
+| `/triggers/delete/contacts` | Bearer | Delete bulk de contacts |
+
 ### Monitoring (Grafana + Loki + Promtail)
 
 Stack de observabilidad incluido en el mismo `docker-compose.yml`:
@@ -191,7 +211,8 @@ Volumes Docker: `loki-data`, `grafana-data` (persistencia entre reinicios).
 ## Proximos pasos previstos
 
 1. ~~Implementar `HttpDispatcher` para enviar payloads transformados a la API destino~~ ✓
-2. Manejo de reintentos HTTP y dead letter queue
-3. Implementar servidor HTTP en `http/server.ts` (webhooks + health endpoint)
-4. Filtrado por tipo de operacion si es necesario
-5. Alertas en Grafana (ej. errores sostenidos, pending buffer creciendo)
+2. ~~Implementar servidor HTTP con Trigger API (bulk sync/delete endpoints)~~ ✓
+3. ~~Documentacion Swagger/OpenAPI auto-generada para la Trigger API~~ ✓
+4. Manejo de reintentos HTTP y dead letter queue
+5. Filtrado por tipo de operacion si es necesario
+6. Alertas en Grafana (ej. errores sostenidos, pending buffer creciendo)

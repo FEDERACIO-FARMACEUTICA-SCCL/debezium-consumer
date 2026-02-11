@@ -1,0 +1,259 @@
+import { logger } from "../logger";
+import { ApiClient } from "../dispatch/http-client";
+import { PayloadRegistry } from "../payloads/payload-builder";
+import { store } from "../domain/store";
+import { Supplier, SupplierContact } from "../types/payloads";
+import {
+  BulkResult,
+  SupplierDeletion,
+  SupplierContactDeletion,
+} from "../types/deletions";
+
+export class BulkService {
+  private running = false;
+
+  constructor(
+    private client: ApiClient,
+    private registry: PayloadRegistry,
+    private batchSize: number
+  ) {}
+
+  async syncSuppliers(): Promise<BulkResult> {
+    return this.withMutex(() => this.doSyncSuppliers());
+  }
+
+  async syncContacts(): Promise<BulkResult> {
+    return this.withMutex(() => this.doSyncContacts());
+  }
+
+  async deleteSuppliers(): Promise<BulkResult> {
+    return this.withMutex(() => this.doDeleteSuppliers());
+  }
+
+  async deleteContacts(): Promise<BulkResult> {
+    return this.withMutex(() => this.doDeleteContacts());
+  }
+
+  private async doSyncSuppliers(): Promise<BulkResult> {
+    const start = Date.now();
+    const codigos = store.getAllCodigos("ctercero");
+    const builder = this.registry.get("supplier");
+
+    const items: Supplier[] = [];
+    let skipped = 0;
+
+    for (const codigo of codigos) {
+      const result = builder?.build(codigo) as Supplier[] | null;
+      if (result) {
+        items.push(...result);
+      } else {
+        skipped++;
+      }
+    }
+
+    const { successBatches, failedBatches, totalBatches } =
+      await this.sendBatches("PUT", "/ingest-api/suppliers", items, "sync", "supplier");
+
+    return {
+      operation: "sync",
+      target: "supplier",
+      totalCodigos: codigos.length,
+      totalItems: items.length,
+      batches: totalBatches,
+      successBatches,
+      failedBatches,
+      skipped,
+      durationMs: Date.now() - start,
+    };
+  }
+
+  private async doSyncContacts(): Promise<BulkResult> {
+    const start = Date.now();
+    const codigos = store.getAllCodigos("ctercero");
+    const builder = this.registry.get("contact");
+
+    const items: SupplierContact[] = [];
+    let skipped = 0;
+
+    for (const codigo of codigos) {
+      const result = builder?.build(codigo) as SupplierContact[] | null;
+      if (result) {
+        items.push(...result);
+      } else {
+        skipped++;
+      }
+    }
+
+    const { successBatches, failedBatches, totalBatches } =
+      await this.sendBatches("PUT", "/ingest-api/suppliers-contacts", items, "sync", "contact");
+
+    return {
+      operation: "sync",
+      target: "contact",
+      totalCodigos: codigos.length,
+      totalItems: items.length,
+      batches: totalBatches,
+      successBatches,
+      failedBatches,
+      skipped,
+      durationMs: Date.now() - start,
+    };
+  }
+
+  private async doDeleteSuppliers(): Promise<BulkResult> {
+    const start = Date.now();
+    const codigos = store.getAllCodigos("ctercero");
+    const now = new Date().toISOString();
+
+    const items: SupplierDeletion[] = codigos.map((codigo) => ({
+      CodSupplier: codigo,
+      DeletionDate: now,
+    }));
+
+    const { successBatches, failedBatches, totalBatches } =
+      await this.sendBatches("DELETE", "/ingest-api/suppliers", items, "delete", "supplier");
+
+    return {
+      operation: "delete",
+      target: "supplier",
+      totalCodigos: codigos.length,
+      totalItems: items.length,
+      batches: totalBatches,
+      successBatches,
+      failedBatches,
+      skipped: 0,
+      durationMs: Date.now() - start,
+    };
+  }
+
+  private async doDeleteContacts(): Promise<BulkResult> {
+    const start = Date.now();
+    const codigos = store.getAllCodigos("ctercero");
+    const now = new Date().toISOString();
+    let skipped = 0;
+
+    const items: SupplierContactDeletion[] = [];
+    for (const codigo of codigos) {
+      const ctercero = store.getSingle("ctercero", codigo);
+      const nif = ctercero?.["cif"];
+      if (nif == null || String(nif).trim() === "") {
+        skipped++;
+        logger.warn(
+          { tag: "BulkSync", codigo },
+          "Skipping contact deletion: missing NIF"
+        );
+        continue;
+      }
+      items.push({
+        CodSupplier: codigo,
+        NIF: String(nif).trim(),
+        DeletionDate: now,
+      });
+    }
+
+    const { successBatches, failedBatches, totalBatches } =
+      await this.sendBatches("DELETE", "/ingest-api/suppliers-contacts", items, "delete", "contact");
+
+    return {
+      operation: "delete",
+      target: "contact",
+      totalCodigos: codigos.length,
+      totalItems: items.length,
+      batches: totalBatches,
+      successBatches,
+      failedBatches,
+      skipped,
+      durationMs: Date.now() - start,
+    };
+  }
+
+  private async sendBatches(
+    method: string,
+    path: string,
+    items: unknown[],
+    operation: string,
+    target: string
+  ): Promise<{ totalBatches: number; successBatches: number; failedBatches: number }> {
+    const chunks = this.chunk(items);
+    const totalBatches = chunks.length;
+    let successBatches = 0;
+    let failedBatches = 0;
+    let sentItems = 0;
+
+    for (let i = 0; i < chunks.length; i++) {
+      const batch = chunks[i];
+      sentItems += batch.length;
+      try {
+        await this.client.request(method, path, batch);
+        successBatches++;
+        logger.info(
+          {
+            tag: "BulkSync",
+            operation,
+            target,
+            batch: i + 1,
+            totalBatches,
+            items: batch.length,
+            sentItems,
+            totalItems: items.length,
+          },
+          `Batch ${i + 1}/${totalBatches} sent (${sentItems}/${items.length} items)`
+        );
+      } catch (err) {
+        failedBatches++;
+        logger.error(
+          {
+            tag: "BulkSync",
+            operation,
+            target,
+            batch: i + 1,
+            totalBatches,
+            err,
+          },
+          `Batch ${i + 1}/${totalBatches} failed`
+        );
+      }
+    }
+
+    logger.info(
+      {
+        tag: "BulkSync",
+        operation,
+        target,
+        totalItems: items.length,
+        batches: totalBatches,
+        successBatches,
+        failedBatches,
+      },
+      `Bulk ${operation} ${target} completed: ${successBatches}/${totalBatches} batches OK`
+    );
+
+    return { totalBatches, successBatches, failedBatches };
+  }
+
+  private chunk<T>(arr: T[]): T[][] {
+    const chunks: T[][] = [];
+    for (let i = 0; i < arr.length; i += this.batchSize) {
+      chunks.push(arr.slice(i, i + this.batchSize));
+    }
+    return chunks;
+  }
+
+  private async withMutex<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.running) {
+      throw new BulkOperationInProgressError();
+    }
+    this.running = true;
+    try {
+      return await fn();
+    } finally {
+      this.running = false;
+    }
+  }
+}
+
+export class BulkOperationInProgressError extends Error {
+  constructor() {
+    super("A bulk operation is already in progress");
+  }
+}

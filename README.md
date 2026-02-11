@@ -9,7 +9,9 @@ Informix DB
     |
     | (Change Data Capture)
     v
-Debezium Server  -->  Kafka  -->  [este consumer]  -->  Ingest API (PUT)
+Debezium Server  -->  Kafka  -->  [este consumer]  -->  Ingest API (PUT/DELETE)
+                                        |
+                                   Trigger API (:3001)  -->  Swagger UI (/docs)
                                         |
                                    pino (JSON stdout)
                                         |
@@ -118,7 +120,8 @@ informix-consumer/
     │   └── http-client.ts           # ApiClient: JWT auth + renovacion automatica + HTTP calls
     │
     └── http/
-        └── server.ts               # Placeholder para futuro servidor HTTP
+        ├── server.ts               # Fastify server: Trigger API + Swagger UI + health
+        └── schemas.ts              # JSON Schemas OpenAPI para todas las rutas
 ```
 
 ### Capas y responsabilidades
@@ -130,7 +133,7 @@ informix-consumer/
 | **Payloads** | `payloads/` | Builders de payloads (patron Strategy via `PayloadBuilder` interface) |
 | **Kafka** | `kafka/` | Infraestructura Kafka pura, snapshot state machine, orquestacion de mensajes |
 | **Dispatch** | `dispatch/` | Envio de payloads via HTTP (`HttpDispatcher` + `ApiClient`), buffer de reintentos |
-| **HTTP** | `http/` | Futuro servidor HTTP para webhooks y health checks |
+| **HTTP** | `http/` | Trigger API (Fastify): bulk sync/delete endpoints, Swagger UI, health check |
 
 ### Como añadir un nuevo payload type
 
@@ -283,6 +286,56 @@ Si al construir un payload faltan datos (ej: llega un evento de `cterdire` pero 
 - Maximo 5 reintentos o 60 segundos de antiguedad
 - Capacidad maxima: 10.000 entradas (evicta las mas antiguas)
 
+## Trigger API (bulk sync/delete)
+
+Servidor Fastify en puerto 3001 que permite lanzar operaciones bulk de sincronizacion y borrado contra la Ingest API. Protegido con Bearer token (`TRIGGER_API_KEY`).
+
+### Endpoints
+
+| Metodo | Ruta | Descripcion |
+|---|---|---|
+| `GET` | `/health` | Health check (sin auth) |
+| `POST` | `/triggers/sync/suppliers` | Sync bulk de todos los suppliers del store |
+| `POST` | `/triggers/sync/contacts` | Sync bulk de todos los contacts del store |
+| `POST` | `/triggers/delete/suppliers` | Delete bulk de todos los suppliers |
+| `POST` | `/triggers/delete/contacts` | Delete bulk de todos los contacts |
+
+Todas las rutas `/triggers/*` requieren header `Authorization: Bearer <TRIGGER_API_KEY>`. Si ya hay una operacion bulk en curso, devuelve `409 Conflict`.
+
+### Respuesta (BulkResult)
+
+```json
+{
+  "operation": "sync",
+  "target": "supplier",
+  "totalCodigos": 11234,
+  "totalItems": 11200,
+  "batches": 12,
+  "successBatches": 12,
+  "failedBatches": 0,
+  "skipped": 34,
+  "durationMs": 8432
+}
+```
+
+### Swagger UI (documentacion interactiva)
+
+La API incluye documentacion OpenAPI 3.0.3 auto-generada con `@fastify/swagger` + `@fastify/swagger-ui`. Los schemas se definen inline en cada ruta — cuando se añadan o modifiquen rutas, la documentacion se actualiza automaticamente.
+
+| URL | Auth | Proposito |
+|---|---|---|
+| `http://localhost:3001/docs` | No | Swagger UI interactivo |
+| `http://localhost:3001/docs/json` | No | OpenAPI spec JSON (importable en Postman) |
+| `http://localhost:3001/docs/yaml` | No | OpenAPI spec YAML |
+
+Para ejecutar llamadas desde Swagger UI:
+
+1. Abrir `http://localhost:3001/docs`
+2. Click en el boton **Authorize** (icono candado)
+3. Introducir el Bearer token (valor de `TRIGGER_API_KEY`)
+4. Click **Authorize** → el token se guarda en localStorage entre recargas (`persistAuthorization: true`)
+5. Expandir cualquier endpoint y click **Try it out** → **Execute**
+
 ## Requisitos previos
 
 El stack de Kafka + Debezium debe estar levantado:
@@ -368,8 +421,9 @@ Usar el Dockerfile directamente con `CMD ["node", "dist/index.js"]` (sin el over
 | `INGEST_API_USERNAME` | **(requerido)** | Usuario para autenticacion JWT |
 | `INGEST_API_PASSWORD` | **(requerido)** | Password para autenticacion JWT |
 | `LOG_LEVEL` | `info` | Nivel de log pino (`debug`, `info`, `warn`, `error`, `fatal`) |
-| `HTTP_PORT` | `3001` | Puerto para futuro servidor HTTP |
-| `HTTP_ENABLED` | `false` | Habilitar servidor HTTP |
+| `HTTP_PORT` | `3001` | Puerto del servidor Trigger API |
+| `HTTP_ENABLED` | `false` | Habilitar servidor Trigger API |
+| `TRIGGER_API_KEY` | **(requerido si HTTP_ENABLED)** | Bearer token para autenticar llamadas a la Trigger API |
 
 **Nota sobre LOG_LEVEL**: Con `info` solo se loguean metadatos (tabla, operacion, campos cambiados, codigo). Con `debug` se incluyen payloads completos y valores PII (nombres, NIFs, direcciones). Usar `debug` solo en desarrollo. Cambiar `LOG_LEVEL` requiere recrear el container (`docker compose up -d consumer`).
 
@@ -410,6 +464,7 @@ Nota: los campos `CHAR` de Informix vienen con espacios al final (padding). El c
 - **Runtime**: Node.js 20
 - **Lenguaje**: TypeScript 5
 - **Cliente Kafka**: `@confluentinc/kafka-javascript` (basado en librdkafka, API compatible KafkaJS)
+- **HTTP server**: Fastify 5 + `@fastify/swagger` + `@fastify/swagger-ui` (OpenAPI 3.0.3)
 - **Logging**: `pino` (JSON estructurado, zero-dep)
 - **Monitoring**: Grafana 11.5 + Loki 3.4 + Promtail 3.4
 - **Plataforma Docker**: `linux/amd64` (requerido por librdkafka en Apple Silicon)
@@ -417,7 +472,8 @@ Nota: los campos `CHAR` de Informix vienen con espacios al final (padding). El c
 ## Proximos pasos
 
 1. ~~Implementar `HttpDispatcher` para enviar payloads a la API REST destino~~ ✓
-2. Manejo de reintentos HTTP y dead letter queue
-3. Implementar servidor HTTP en `http/server.ts` (webhooks + health endpoint)
-4. Filtrado por tipo de operacion si es necesario
-5. Alertas en Grafana (errores sostenidos, pending buffer creciendo)
+2. ~~Implementar servidor HTTP con Trigger API (bulk sync/delete endpoints)~~ ✓
+3. ~~Documentacion Swagger/OpenAPI auto-generada para la Trigger API~~ ✓
+4. Manejo de reintentos HTTP y dead letter queue
+5. Filtrado por tipo de operacion si es necesario
+6. Alertas en Grafana (errores sostenidos, pending buffer creciendo)

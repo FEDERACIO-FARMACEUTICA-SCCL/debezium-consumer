@@ -9,6 +9,9 @@ import { createKafkaConsumer } from "./kafka/consumer";
 import { HttpDispatcher } from "./dispatch/dispatcher";
 import { ApiClient } from "./dispatch/http-client";
 import { startRetryLoop, stopRetryLoop } from "./dispatch/pending-buffer";
+import { BulkService } from "./bulk/bulk-service";
+import { startServer } from "./http/server";
+import type { FastifyInstance } from "fastify";
 
 async function main() {
   // 1. Configuration
@@ -27,6 +30,17 @@ async function main() {
   // 4. API client + Dispatcher
   const apiClient = new ApiClient(config.api);
   const dispatcher = new HttpDispatcher(apiClient);
+
+  // 4b. Bulk operations + HTTP trigger server
+  let server: FastifyInstance | null = null;
+  if (config.http.enabled) {
+    const bulkService = new BulkService(apiClient, registry, config.bulk.batchSize);
+    server = await startServer({
+      port: config.http.port,
+      apiKey: config.http.apiKey,
+      bulkService,
+    });
+  }
 
   // 5. Snapshot tracker
   const snapshotTracker = new SnapshotTracker(config.kafka.topics);
@@ -51,6 +65,7 @@ async function main() {
     let exitCode = 0;
     try {
       stopRetryLoop();
+      if (server) await server.close();
       await consumer.disconnect();
       logger.info("Consumer disconnected");
     } catch (err) {

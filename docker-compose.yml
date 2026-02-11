@@ -3,6 +3,8 @@ services:
     container_name: informix-consumer
     build: .
     platform: linux/amd64
+    ports:
+      - "127.0.0.1:3001:3001"
     environment:
       KAFKA_BROKERS: kafka:29092
       KAFKA_GROUP_ID: informix-consumer
@@ -12,6 +14,9 @@ services:
       INGEST_API_BASE_URL: ${INGEST_API_BASE_URL}
       INGEST_API_USERNAME: ${INGEST_API_USERNAME}
       INGEST_API_PASSWORD: ${INGEST_API_PASSWORD}
+      HTTP_ENABLED: "true"
+      TRIGGER_API_KEY: ${TRIGGER_API_KEY}
+      BULK_BATCH_SIZE: "500"
     labels:
       logging: "loki"
     volumes:

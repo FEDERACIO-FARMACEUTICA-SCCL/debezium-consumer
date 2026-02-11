@@ -15,6 +15,10 @@ export interface AppConfig {
   http: {
     port: number;
     enabled: boolean;
+    apiKey: string;
+  };
+  bulk: {
+    batchSize: number;
   };
   logLevel: "info" | "debug";
 }
@@ -28,6 +32,15 @@ export function loadConfig(): AppConfig {
   if (!apiBaseUrl || !apiUsername || !apiPassword) {
     throw new Error(
       "Missing required env vars: INGEST_API_BASE_URL, INGEST_API_USERNAME, INGEST_API_PASSWORD"
+    );
+  }
+
+  const httpEnabled = process.env.HTTP_ENABLED === "true";
+  const triggerApiKey = process.env.TRIGGER_API_KEY ?? "";
+
+  if (httpEnabled && !triggerApiKey) {
+    throw new Error(
+      "TRIGGER_API_KEY is required when HTTP_ENABLED=true"
     );
   }
 
@@ -47,7 +60,11 @@ export function loadConfig(): AppConfig {
     },
     http: {
       port: Number(process.env.HTTP_PORT ?? 3001),
-      enabled: process.env.HTTP_ENABLED === "true",
+      enabled: httpEnabled,
+      apiKey: triggerApiKey,
+    },
+    bulk: {
+      batchSize: Number(process.env.BULK_BATCH_SIZE ?? 500),
     },
     logLevel: logLevel === "debug" ? "debug" : "info",
   };

@@ -63,6 +63,14 @@ export class InMemoryStore {
     return stats;
   }
 
+  getAllCodigos(table: string): string[] {
+    const single = this.singleStores.get(table);
+    if (single) return [...single.keys()];
+    const array = this.arrayStores.get(table);
+    if (array) return [...array.keys()];
+    return [];
+  }
+
   clear(): void {
     for (const map of this.singleStores.values()) map.clear();
     for (const map of this.arrayStores.values()) map.clear();
@@ -164,4 +172,8 @@ export function getCterdire(codigo: string): StoreRecord[] {
 
 export function getStoreStats(): Record<string, number> {
   return store.getStats();
+}
+
+export function getAllCodigos(table: string): string[] {
+  return store.getAllCodigos(table);
 }
