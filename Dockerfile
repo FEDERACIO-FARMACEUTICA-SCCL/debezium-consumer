@@ -17,9 +17,8 @@ FROM node:20-slim
 WORKDIR /app
 
 COPY package.json package-lock.json* ./
-RUN npm install
+RUN npm ci --omit=dev
 
-COPY tsconfig.json ./
 COPY --from=builder /app/dist ./dist
 
 USER node

@@ -6,6 +6,8 @@ export interface ApiClientConfig {
   password: string;
 }
 
+const FETCH_TIMEOUT_MS = 30_000;
+
 export class ApiClient {
   private readonly baseUrl: string;
   private readonly username: string;
@@ -13,6 +15,7 @@ export class ApiClient {
 
   private accessToken: string | null = null;
   private expiresAt = 0;
+  private authPromise: Promise<string> | null = null;
 
   constructor(config: ApiClientConfig) {
     this.baseUrl = config.baseUrl.replace(/\/+$/, "");
@@ -59,6 +62,7 @@ export class ApiClient {
         "Content-Type": "application/json",
       },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
 
     const durationMs = Date.now() - start;
@@ -78,8 +82,12 @@ export class ApiClient {
       logger.debug({ tag: "API", responseBody }, "API response body");
     } else {
       logger.error(
-        { tag: "API", method, path, status: res.status, durationMs, responseBody },
+        { tag: "API", method, path, status: res.status, durationMs },
         `${method} ${path} → ${res.status} (${durationMs}ms)`
+      );
+      logger.debug(
+        { tag: "API", method, path, responseBody },
+        "API error response body"
       );
     }
 
@@ -90,7 +98,11 @@ export class ApiClient {
     if (this.accessToken && Date.now() < this.expiresAt) {
       return this.accessToken;
     }
-    return this.authenticate();
+    if (this.authPromise) return this.authPromise;
+    this.authPromise = this.authenticate().finally(() => {
+      this.authPromise = null;
+    });
+    return this.authPromise;
   }
 
   private async authenticate(): Promise<string> {
@@ -104,6 +116,7 @@ export class ApiClient {
         username: this.username,
         password: this.password,
       }),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
 
     const durationMs = Date.now() - start;
@@ -111,8 +124,12 @@ export class ApiClient {
     if (!res.ok) {
       const errorBody = await res.text();
       logger.error(
-        { tag: "API", action: "authenticate", status: res.status, durationMs, errorBody },
+        { tag: "API", action: "authenticate", status: res.status, durationMs },
         `Authentication failed → ${res.status} (${durationMs}ms)`
+      );
+      logger.debug(
+        { tag: "API", action: "authenticate", errorBody },
+        "Authentication error response body"
       );
       throw new Error(`Authentication failed: ${res.status}`);
     }

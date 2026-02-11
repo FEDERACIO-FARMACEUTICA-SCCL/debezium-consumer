@@ -34,7 +34,7 @@ export class SupplierContactBuilder
 
     const name = String(ctercero["nombre"] ?? "").trim();
     const nif = trimOrNull(ctercero["cif"]);
-    const status = gproveed["fecbaj"] == null ? "ACTIVE" : "INACTIVE";
+    const status = isActive(gproveed["fecbaj"]) ? "ACTIVE" : "INACTIVE";
 
     const contacts: SupplierContact[] = direcciones.map(
       (dir: StoreRecord) => ({
@@ -53,6 +53,10 @@ export class SupplierContactBuilder
 
     return contacts;
   }
+}
+
+function isActive(fecbaj: unknown): boolean {
+  return fecbaj == null || String(fecbaj).trim() === "";
 }
 
 function trimOrNull(value: unknown): string | null {

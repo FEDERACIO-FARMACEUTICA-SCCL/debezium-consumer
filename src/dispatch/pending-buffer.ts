@@ -26,7 +26,14 @@ export function addPending(codigo: string, type: PayloadType): void {
   }
   if (pending.size >= MAX_PENDING_SIZE) {
     const oldest = pending.keys().next().value;
-    if (oldest !== undefined) pending.delete(oldest);
+    if (oldest !== undefined) {
+      const evicted = pending.get(oldest);
+      logger.warn(
+        { tag: "PendingBuffer", codigo: oldest, types: evicted ? [...evicted.types] : [] },
+        "Buffer at capacity, evicting oldest entry"
+      );
+      pending.delete(oldest);
+    }
   }
   pending.set(codigo, {
     codigo,
@@ -42,7 +49,7 @@ export function startRetryLoop(
 ): void {
   if (timer) return;
 
-  timer = setInterval(() => {
+  timer = setInterval(async () => {
     if (pending.size === 0) return;
 
     for (const [codigo, entry] of pending) {
@@ -71,18 +78,25 @@ export function startRetryLoop(
 
         const payload = builder.build(codigo);
         if (payload) {
-          entry.types.delete(type);
           const tagMap: Record<string, string> = {
             supplier: "Supplier",
             contact: "SupplierContact",
           };
           const tag = tagMap[type] ?? type;
-          logger.info({ tag: "PendingBuffer", codigo }, `${tag} retry succeeded`);
-          logger.debug(
-            { tag: "PendingBuffer", codigo, payload },
-            `${tag} retry payload`
-          );
-          dispatcher.dispatch(type, codigo, payload);
+          try {
+            await dispatcher.dispatch(type, codigo, payload);
+            entry.types.delete(type);
+            logger.info({ tag: "PendingBuffer", codigo }, `${tag} retry succeeded`);
+            logger.debug(
+              { tag: "PendingBuffer", codigo, payload },
+              `${tag} retry payload`
+            );
+          } catch (err) {
+            logger.error(
+              { tag: "PendingBuffer", codigo, type, err },
+              `${tag} retry dispatch failed, will retry next cycle`
+            );
+          }
         }
       }
 

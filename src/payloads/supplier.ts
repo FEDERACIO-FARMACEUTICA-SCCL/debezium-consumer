@@ -28,7 +28,7 @@ export class SupplierBuilder implements PayloadBuilder<Supplier[]> {
       Supplier: String(ctercero["nombre"] ?? "").trim(),
       NIF: trimOrNull(ctercero["cif"]),
       StartDate: formatDate(gproveed["fecalt"]),
-      Status: gproveed["fecbaj"] == null ? "ACTIVE" : "INACTIVE",
+      Status: isActive(gproveed["fecbaj"]) ? "ACTIVE" : "INACTIVE",
     };
 
     return [supplier];
@@ -39,6 +39,10 @@ function trimOrNull(value: unknown): string | null {
   if (value == null) return null;
   const trimmed = String(value).trim();
   return trimmed || null;
+}
+
+function isActive(fecbaj: unknown): boolean {
+  return fecbaj == null || String(fecbaj).trim() === "";
 }
 
 function formatDate(value: unknown): string | null {

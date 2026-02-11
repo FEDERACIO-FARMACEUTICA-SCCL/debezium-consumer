@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "crypto";
 import Fastify, { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
@@ -60,9 +61,15 @@ export async function startServer(opts: ServerOptions): Promise<FastifyInstance>
   app.addHook("onRequest", async (request: FastifyRequest, reply: FastifyReply) => {
     if (request.url === "/health" || request.url.startsWith("/docs")) return;
 
-    const auth = request.headers.authorization;
-    if (!auth || auth !== `Bearer ${opts.apiKey}`) {
+    const auth = request.headers.authorization ?? "";
+    const expected = `Bearer ${opts.apiKey}`;
+    const isValid =
+      auth.length === expected.length &&
+      timingSafeEqual(Buffer.from(auth), Buffer.from(expected));
+
+    if (!isValid) {
       reply.code(401).send({ error: "Unauthorized" });
+      return;
     }
   });
 
