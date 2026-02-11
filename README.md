@@ -99,7 +99,8 @@ informix-consumer/
     ├── domain/
     │   ├── table-registry.ts        # Fuente unica de verdad para tablas y mappings
     │   ├── store.ts                 # InMemoryStore data-driven desde registry
-    │   └── watched-fields.ts        # Deteccion de cambios en campos monitorizados
+    │   ├── watched-fields.ts        # Deteccion de cambios en campos monitorizados
+    │   └── country-codes.ts         # Mapping ISO3 → ISO2 para codigos de pais
     │
     ├── payloads/
     │   ├── payload-builder.ts       # Interface PayloadBuilder + PayloadRegistry
@@ -213,69 +214,65 @@ Si cambian campos de varias tablas en la misma transaccion, cada evento CDC se p
 
 ## Payloads
 
+Los payloads se envian como arrays directamente a la API (sin wrapper), alineados con la especificacion OpenAPI (`src/external-api-documentation/openapi.json`).
+
 ### Supplier
 
-Se construye cuando cambian campos que lo alimentan (`ctercero.*`, `gproveed.fecalt`, `gproveed.fecbaj`). Cruza datos de `ctercero` y `gproveed` por `codigo`.
+Se construye cuando cambian campos que lo alimentan (`ctercero.*`, `gproveed.fecalt`, `gproveed.fecbaj`). Cruza datos de `ctercero` y `gproveed` por `codigo`. Se envia a `PUT /ingest-api/suppliers`.
 
 ```json
-{
-  "Suppliers": [
-    {
-      "IdSupplier": "P01868-FC-UUID",
-      "CodSupplier": "P01868",
-      "Supplier": "Proveedor Demo S.A.",
-      "NIF": "A12345678",
-      "StartDate": "2023-05-10",
-      "Status": "ACTIVO"
-    }
-  ]
-}
+[
+  {
+    "CodSupplier": "P01868",
+    "Supplier": "Proveedor Demo S.A.",
+    "NIF": "A12345678",
+    "StartDate": "2023-05-10",
+    "Status": "ACTIVE"
+  }
+]
 ```
 
 | Campo | Origen | Notas |
 |---|---|---|
-| `IdSupplier` | `ctercero.codigo` + sufijo | Placeholder, se definira formato final |
-| `CodSupplier` | `ctercero.codigo` | |
-| `Supplier` | `ctercero.nombre` | Trimmed |
-| `NIF` | `ctercero.cif` | Trimmed |
-| `StartDate` | `gproveed.fecalt` | Debezium envia dias desde epoch, se convierte a YYYY-MM-DD |
-| `Status` | `gproveed.fecbaj` | `null` = ACTIVO, con valor = BAJA |
+| `CodSupplier` | `ctercero.codigo` | Requerido |
+| `Supplier` | `ctercero.nombre` | Requerido, trimmed |
+| `NIF` | `ctercero.cif` | Nullable, trimmed (empty string → null) |
+| `StartDate` | `gproveed.fecalt` | Debezium envia dias desde epoch → YYYY-MM-DD |
+| `Status` | `gproveed.fecbaj` | `null` → ACTIVE, con valor → INACTIVE |
 
 ### SupplierContact
 
-Se construye cuando cambian campos que lo alimentan (`ctercero.*`, `gproveed.fecbaj`, `cterdire.*`). Nota: un cambio solo en `gproveed.fecalt` **no** dispara este payload. Genera una entrada por cada direccion del proveedor.
+Se construye cuando cambian campos que lo alimentan (`ctercero.*`, `gproveed.fecbaj`, `cterdire.*`). Nota: un cambio solo en `gproveed.fecalt` **no** dispara este payload. Genera una entrada por cada direccion del proveedor. Se envia a `PUT /ingest-api/suppliers-contacts`.
 
 ```json
-{
-  "Suppliers_Contacts": [
-    {
-      "IdSupplier": "P01881-FC-UUID",
-      "Name": "KONCARE BIOTECH SL.",
-      "NIF": "B19325638",
-      "Address": "CALLE RIO MANZANARES 1359",
-      "City": "EL CASAR GUADALAJARA",
-      "Country": "ESP",
-      "Postal_Code": "19170",
-      "Phone": "",
-      "E_Mail": "pedidos@koncare.es",
-      "Status": "ACTIVO"
-    }
-  ]
-}
+[
+  {
+    "CodSupplier": "P01881",
+    "Name": "KONCARE BIOTECH SL.",
+    "NIF": "B19325638",
+    "Adress": "CALLE RIO MANZANARES 1359",
+    "City": "EL CASAR GUADALAJARA",
+    "Country": "ES",
+    "Postal_Code": "19170",
+    "Phone": null,
+    "E_Mail": "pedidos@koncare.es",
+    "Status": "ACTIVE"
+  }
+]
 ```
 
 | Campo | Origen | Notas |
 |---|---|---|
-| `IdSupplier` | `ctercero.codigo` + sufijo | Placeholder |
-| `Name` | `ctercero.nombre` | Trimmed |
-| `NIF` | `ctercero.cif` | Trimmed |
-| `Address` | `cterdire.direcc` | Una entrada por direccion |
-| `City` | `cterdire.poblac` | |
-| `Country` | `cterdire.codnac` | Codigo pais (ej: ESP) |
-| `Postal_Code` | `cterdire.codpos` | |
-| `Phone` | `cterdire.telef1` | |
-| `E_Mail` | `cterdire.email` | |
-| `Status` | `gproveed.fecbaj` | `null` = ACTIVO, con valor = BAJA |
+| `CodSupplier` | `ctercero.codigo` | Requerido |
+| `Name` | `ctercero.nombre` | Requerido, trimmed |
+| `NIF` | `ctercero.cif` | Nullable, trimmed |
+| `Adress` | `cterdire.direcc` | Nullable, trimmed (una entrada por direccion) |
+| `City` | `cterdire.poblac` | Nullable, trimmed |
+| `Country` | `cterdire.codnac` | ISO3 → ISO2 (ej: ESP → ES) |
+| `Postal_Code` | `cterdire.codpos` | Nullable, trimmed |
+| `Phone` | `cterdire.telef1` | Nullable, trimmed |
+| `E_Mail` | `cterdire.email` | Nullable, trimmed |
+| `Status` | `gproveed.fecbaj` | `null` → ACTIVE, con valor → INACTIVE |
 
 ### Pending buffer
 

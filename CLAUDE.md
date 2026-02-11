@@ -53,6 +53,7 @@ src/
     table-registry.ts           # Fuente unica de verdad para tablas, watched fields y payload mappings
     store.ts                    # Clase InMemoryStore (data-driven desde registry)
     watched-fields.ts           # detectChanges() lee WATCHED_FIELDS del registry
+    country-codes.ts            # Mapping ISO3 → ISO2 para codigos de pais
 
   payloads/
     payload-builder.ts          # Interface PayloadBuilder + PayloadRegistry

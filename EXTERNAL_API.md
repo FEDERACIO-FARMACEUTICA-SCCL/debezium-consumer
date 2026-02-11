@@ -1,98 +1,73 @@
-JSON Suppliers:
+# External API Documentation
 
-{
+## JSON Suppliers
 
-  ‘Suppliers': [
+```json
+[
+  {
+    "CodSupplier": "PRV000123",
+    "Supplier": "Proveedor Demo S.A.",
+    "NIF": "A12345678",
+    "StartDate": "2023-05-10",
+    "Status": "ACTIVE"
+  }
+]
+```
 
-    {
+## JSON Suppliers Contacts
 
-      "IdSupplier": "6571AAE7-FBC9-41C0-9690-0063408449FC”,
+```json
+[
+  {
+    "CodSupplier": "PRV000123",
+    "Name": "Proveedor Demo S.A.",
+    "NIF": "A12345678",
+    "Adress": "Calle Mayor 15",
+    "City": "Barcelona",
+    "Country": "ES",
+    "Postal_Code": "08001",
+    "Phone": "+34931234567",
+    "E_Mail": "info@proveedordemo.com",
+    "Status": "ACTIVE"
+  }
+]
+```
 
-      "CodSupplier": "PRV000123",
+## Origen Suppliers
 
-      "Supplier": "Proveedor Demo S.A.",
+| Campo | Tipo | Origen | Notas |
+|---|---|---|---|
+| CodSupplier | string (max 50) | ctercero.codigo | Requerido |
+| Supplier | string (max 255) | ctercero.nombre | Requerido, trimmed |
+| NIF | string (max 50) \| null | ctercero.cif | Nullable, trimmed |
+| StartDate | date \| null | gproveed.fecalt | Dias desde epoch -> YYYY-MM-DD |
+| Status | string (max 50) \| null | gproveed.fecbaj | null -> "ACTIVE", con valor -> "INACTIVE" |
 
-      "NIF": "A12345678",
+## Origen Suppliers Contacts
 
-      "StartDate': "2023-05-10",
+| Campo | Tipo | Origen | Notas |
+|---|---|---|---|
+| CodSupplier | string (max 50) | ctercero.codigo | Requerido |
+| Name | string (max 255) | ctercero.nombre | Requerido, trimmed |
+| NIF | string (max 50) \| null | ctercero.cif | Nullable, trimmed |
+| Adress | string (max 255) \| null | cterdire.direcc | Nullable, trimmed |
+| City | string (max 255) \| null | cterdire.poblac | Nullable, trimmed |
+| Country | string (max 2) \| null | cterdire.codnac | ISO3 -> ISO2 (ej: ESP -> ES) |
+| Postal_Code | string (max 50) \| null | cterdire.codpos | Nullable, trimmed |
+| Phone | string (max 50) \| null | cterdire.telef1 | Nullable, trimmed |
+| E_Mail | string (max 255) \| null | cterdire.email | Nullable, trimmed |
+| Status | string (max 50) \| null | gproveed.fecbaj | null -> "ACTIVE", con valor -> "INACTIVE" |
 
-      "Status": "ACTIVE"
+## API Endpoints
 
-    }
+| Metodo | Endpoint | Body |
+|---|---|---|
+| PUT | `/ingest-api/suppliers` | `Supplier[]` |
+| DELETE | `/ingest-api/suppliers` | `SupplierDeletion[]` |
+| PUT | `/ingest-api/suppliers-contacts` | `SupplierContact[]` |
+| DELETE | `/ingest-api/suppliers-contacts` | `SupplierContactDeletion[]` |
+| POST | `/ingest-api/token` | `{ username, password }` -> JWT |
 
-  ]
+Autenticacion: Bearer token (JWT) en todos los endpoints excepto `/token`.
 
-}
-
- 
-
-JSON Contacs relacionados con Suppliers:
-
-{
-    “Suppliers_Contacts": [
-
-        {
-
-          "IdSupplier": "6571AAE7-FBC9-41C0-9690-0063408449FC",
-
-          “Name": "Proveedor Demo S.A.",
-
-          “NIF": "A12345678",
-
-          “Address": "Calle Mayor 15",
-
-          “City": "Barcelona",
-
-          “Country": "ES",
-
-          “Postal_Code": "08001",
-
-          “Phone": "+34931234567",
-
-          “E_Mail": "info@proveedordemo.com",
-
-          “Status": "ACTIVE"
-
-        }
-
-      ]
-}
-
-
-Origen Suppliers
-
-IdSupplier: UUID Farmacloud
-
-CodSupplier: FedeFarma_imports..ctercero.codigo
-
-Supplier [VARCHAR(255)] : FedeFarma_imports..ctercero.nombre
-
-NIF [VARCHAR(50)] : FedeFarma_imports..ctercero.cif
-
-StartDate [DATE] : TRY_CONVERT(date, FedeFarma_imports..gproveed.fecalt)
-
-Status [VARCHAR(255)] : TRY_CONVERT(date, FedeFarma_imports..gproveed.fecbaj) is null ? ACTIVO | BAJA
-
- 
-
-      Origen Suppliers_Contacts
-
-             IdSupplier: UUID Farmacloud
-
-Name [VARCHAR(255)] : FedeFarma_imports..ctercero.nombre
-
-NIF [VARCHAR(50)] : FedeFarma_imports..ctercero.cif
-
-Address [VARCHAR(255)] : FedeFarma_imports..cterdire.direcc
-
-City [VARCHAR(255)] : FedeFarma_imports..cterdire.poblac
-
-Country [VARCHAR(255)] : FedeFarma_imports..cterdire.codnac
-
-Postal_Code [VARCHAR(50)] : FedeFarma_imports..cterdire.codpos
-
-Phone [VARCHAR(50)] : FedeFarma_imports..cterdire.telef1
-
-E_Mail [VARCHAR(255)] : FedeFarma_imports..cterdire.email
-
-          Status [VARCHAR(255)] : TRY_CONVERT(date, FedeFarma_imports..gproveed.fecbaj) is null ? ACTIVO | BAJA
+Especificacion OpenAPI completa: `src/external-api-documentation/openapi.json`

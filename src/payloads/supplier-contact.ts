@@ -1,18 +1,15 @@
 import { store, StoreRecord } from "../domain/store";
+import { toISO2 } from "../domain/country-codes";
 import { logger } from "../logger";
-import {
-  SupplierContact,
-  SupplierContactPayload,
-  PayloadType,
-} from "../types/payloads";
+import { SupplierContact, PayloadType } from "../types/payloads";
 import { PayloadBuilder } from "./payload-builder";
 
 export class SupplierContactBuilder
-  implements PayloadBuilder<SupplierContactPayload>
+  implements PayloadBuilder<SupplierContact[]>
 {
   readonly type: PayloadType = "contact";
 
-  build(codigo: string): SupplierContactPayload | null {
+  build(codigo: string): SupplierContact[] | null {
     const ctercero = store.getSingle("ctercero", codigo);
     const gproveed = store.getSingle("gproveed", codigo);
     const direcciones = store.getArray("cterdire", codigo);
@@ -35,30 +32,31 @@ export class SupplierContactBuilder
       return null;
     }
 
-    const name = trimStr(ctercero["nombre"]);
-    const nif = trimStr(ctercero["cif"]);
-    const status: "ACTIVO" | "BAJA" =
-      gproveed["fecbaj"] == null ? "ACTIVO" : "BAJA";
+    const name = String(ctercero["nombre"] ?? "").trim();
+    const nif = trimOrNull(ctercero["cif"]);
+    const status = gproveed["fecbaj"] == null ? "ACTIVE" : "INACTIVE";
 
     const contacts: SupplierContact[] = direcciones.map(
       (dir: StoreRecord) => ({
-        IdSupplier: `${codigo}-FC-UUID`,
+        CodSupplier: String(codigo),
         Name: name,
         NIF: nif,
-        Adress: trimStr(dir["direcc"]),
-        City: trimStr(dir["poblac"]),
-        Country: trimStr(dir["codnac"]),
-        Postal_Code: trimStr(dir["codpos"]),
-        Phone: trimStr(dir["telef1"]),
-        E_Mail: trimStr(dir["email"]),
+        Adress: trimOrNull(dir["direcc"]),
+        City: trimOrNull(dir["poblac"]),
+        Country: toISO2(dir["codnac"]),
+        Postal_Code: trimOrNull(dir["codpos"]),
+        Phone: trimOrNull(dir["telef1"]),
+        E_Mail: trimOrNull(dir["email"]),
         Status: status,
       })
     );
 
-    return { Suppliers_Contacts: contacts };
+    return contacts;
   }
 }
 
-function trimStr(value: unknown): string {
-  return String(value ?? "").trim();
+function trimOrNull(value: unknown): string | null {
+  if (value == null) return null;
+  const trimmed = String(value).trim();
+  return trimmed || null;
 }

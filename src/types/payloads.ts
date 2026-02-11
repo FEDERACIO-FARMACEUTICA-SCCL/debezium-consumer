@@ -1,33 +1,24 @@
 export interface Supplier {
-  IdSupplier: string;
   CodSupplier: string;
   Supplier: string;
-  NIF: string;
+  NIF: string | null;
   StartDate: string | null;
-  Status: "ACTIVO" | "BAJA";
-}
-
-export interface SupplierPayload {
-  Suppliers: Supplier[];
+  Status: string | null;
 }
 
 export interface SupplierContact {
-  IdSupplier: string;
+  CodSupplier: string;
   Name: string;
-  NIF: string;
-  Adress: string;
-  City: string;
-  Country: string;
-  Postal_Code: string;
-  Phone: string;
-  E_Mail: string;
-  Status: "ACTIVO" | "BAJA";
-}
-
-export interface SupplierContactPayload {
-  Suppliers_Contacts: SupplierContact[];
+  NIF: string | null;
+  Adress: string | null;
+  City: string | null;
+  Country: string | null;
+  Postal_Code: string | null;
+  Phone: string | null;
+  E_Mail: string | null;
+  Status: string | null;
 }
 
 export type PayloadType = "supplier" | "contact";
 
-export type AnyPayload = SupplierPayload | SupplierContactPayload;
+export type AnyPayload = Supplier[] | SupplierContact[];

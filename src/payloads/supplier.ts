@@ -1,16 +1,12 @@
 import { store } from "../domain/store";
 import { logger } from "../logger";
-import {
-  Supplier,
-  SupplierPayload,
-  PayloadType,
-} from "../types/payloads";
+import { Supplier, PayloadType } from "../types/payloads";
 import { PayloadBuilder } from "./payload-builder";
 
-export class SupplierBuilder implements PayloadBuilder<SupplierPayload> {
+export class SupplierBuilder implements PayloadBuilder<Supplier[]> {
   readonly type: PayloadType = "supplier";
 
-  build(codigo: string): SupplierPayload | null {
+  build(codigo: string): Supplier[] | null {
     const ctercero = store.getSingle("ctercero", codigo);
     const gproveed = store.getSingle("gproveed", codigo);
 
@@ -28,16 +24,21 @@ export class SupplierBuilder implements PayloadBuilder<SupplierPayload> {
     }
 
     const supplier: Supplier = {
-      IdSupplier: `${codigo}-FC-UUID`,
       CodSupplier: String(codigo),
       Supplier: String(ctercero["nombre"] ?? "").trim(),
-      NIF: String(ctercero["cif"] ?? "").trim(),
+      NIF: trimOrNull(ctercero["cif"]),
       StartDate: formatDate(gproveed["fecalt"]),
-      Status: gproveed["fecbaj"] == null ? "ACTIVO" : "BAJA",
+      Status: gproveed["fecbaj"] == null ? "ACTIVE" : "INACTIVE",
     };
 
-    return { Suppliers: [supplier] };
+    return [supplier];
   }
+}
+
+function trimOrNull(value: unknown): string | null {
+  if (value == null) return null;
+  const trimmed = String(value).trim();
+  return trimmed || null;
 }
 
 function formatDate(value: unknown): string | null {
