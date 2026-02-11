@@ -2,6 +2,7 @@ import { PayloadType, AnyPayload } from "../types/payloads";
 import { PayloadRegistry } from "../payloads/payload-builder";
 import { PayloadDispatcher } from "./dispatcher";
 import { addPending } from "./pending-buffer";
+import { ENTITY_LABELS } from "../domain/entity-registry";
 import { logger } from "../logger";
 
 export class CdcDebouncer {
@@ -65,8 +66,7 @@ export class CdcDebouncer {
 
         const built = builder.build(codigo);
         if (built) {
-          const tagMap: Record<string, string> = { supplier: "Supplier", contact: "SupplierContact" };
-          const tag = tagMap[type] ?? type;
+          const tag = ENTITY_LABELS[type] ?? type;
           logger.debug({ tag, codigo, payload: built }, `${tag} payload details`);
 
           const acc = grouped.get(type);

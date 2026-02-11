@@ -11,6 +11,8 @@ import { ApiClient } from "./dispatch/http-client";
 import { CdcDebouncer } from "./dispatch/cdc-debouncer";
 import { startRetryLoop, stopRetryLoop } from "./dispatch/pending-buffer";
 import { BulkService } from "./bulk/bulk-service";
+import { SupplierBulkHandler } from "./bulk/handlers/supplier-handler";
+import { ContactBulkHandler } from "./bulk/handlers/contact-handler";
 import { startServer } from "./http/server";
 import type { FastifyInstance } from "fastify";
 
@@ -35,7 +37,9 @@ async function main() {
   // 4b. Bulk operations + HTTP trigger server
   let server: FastifyInstance | null = null;
   if (config.http.enabled) {
-    const bulkService = new BulkService(apiClient, registry, config.bulk.batchSize);
+    const bulkService = new BulkService(apiClient, config.bulk.batchSize);
+    bulkService.registerHandler(new SupplierBulkHandler(registry));
+    bulkService.registerHandler(new ContactBulkHandler(registry));
     server = await startServer({
       port: config.http.port,
       apiKey: config.http.apiKey,

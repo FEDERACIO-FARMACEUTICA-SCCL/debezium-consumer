@@ -1,73 +1,46 @@
 import { logger } from "../logger";
 import { ApiClient } from "../dispatch/http-client";
-import { PayloadRegistry } from "../payloads/payload-builder";
 import { store } from "../domain/store";
-import { Supplier, SupplierContact } from "../types/payloads";
-import {
-  BulkResult,
-  SkippedDetail,
-  SupplierDeletion,
-  SupplierContactDeletion,
-} from "../types/deletions";
+import { ENTITY_MAP } from "../domain/entity-registry";
+import { PayloadType } from "../types/payloads";
+import { BulkResult } from "../types/deletions";
+import { BulkHandler } from "./bulk-handler";
 
 export class BulkService {
   private running = false;
+  private handlers = new Map<PayloadType, BulkHandler>();
 
   constructor(
     private client: ApiClient,
-    private registry: PayloadRegistry,
     private batchSize: number
   ) {}
 
-  async syncSuppliers(codigos?: string[]): Promise<BulkResult> {
-    return this.withMutex(() => this.doSyncSuppliers(codigos));
+  registerHandler(handler: BulkHandler): void {
+    this.handlers.set(handler.type, handler);
   }
 
-  async syncContacts(codigos?: string[]): Promise<BulkResult> {
-    return this.withMutex(() => this.doSyncContacts(codigos));
+  async sync(type: PayloadType, codigos?: string[]): Promise<BulkResult> {
+    return this.withMutex(() => this.doSync(type, codigos));
   }
 
-  async deleteSuppliers(codigos?: string[]): Promise<BulkResult> {
-    return this.withMutex(() => this.doDeleteSuppliers(codigos));
+  async delete(type: PayloadType, codigos?: string[]): Promise<BulkResult> {
+    return this.withMutex(() => this.doDelete(type, codigos));
   }
 
-  async deleteContacts(codigos?: string[]): Promise<BulkResult> {
-    return this.withMutex(() => this.doDeleteContacts(codigos));
-  }
-
-  private async doSyncSuppliers(filterCodigos?: string[]): Promise<BulkResult> {
+  private async doSync(type: PayloadType, filterCodigos?: string[]): Promise<BulkResult> {
     const start = Date.now();
+    const handler = this.handlers.get(type)!;
+    const entity = ENTITY_MAP.get(type)!;
     const codigos = filterCodigos ?? store.getAllCodigos("ctercero");
-    const builder = this.registry.get("supplier");
 
-    const items: Supplier[] = [];
-    const skippedDetails: SkippedDetail[] = [];
-
-    for (const codigo of codigos) {
-      const ctercero = store.getSingle("ctercero", codigo);
-      if (!ctercero) {
-        skippedDetails.push({ CodSupplier: codigo, reason: "Not found in store (ctercero)" });
-        continue;
-      }
-      const gproveed = store.getSingle("gproveed", codigo);
-      if (!gproveed) {
-        skippedDetails.push({ CodSupplier: codigo, reason: "Incomplete data: missing gproveed" });
-        continue;
-      }
-      const result = builder?.build(codigo) as Supplier[] | null;
-      if (result) {
-        items.push(...result);
-      } else {
-        skippedDetails.push({ CodSupplier: codigo, reason: "Builder returned null" });
-      }
-    }
+    const { items, skippedDetails } = handler.syncAll(codigos);
 
     const { successBatches, failedBatches, totalBatches } =
-      await this.sendBatches("PUT", "/ingest-api/suppliers", items, "sync", "supplier");
+      await this.sendBatches("PUT", entity.apiPath, items, "sync", type);
 
     return {
       operation: "sync",
-      target: "supplier",
+      target: type,
       totalCodsuppliers: codigos.length,
       totalItems: items.length,
       batches: totalBatches,
@@ -79,121 +52,20 @@ export class BulkService {
     };
   }
 
-  private async doSyncContacts(filterCodigos?: string[]): Promise<BulkResult> {
+  private async doDelete(type: PayloadType, filterCodigos?: string[]): Promise<BulkResult> {
     const start = Date.now();
+    const handler = this.handlers.get(type)!;
+    const entity = ENTITY_MAP.get(type)!;
     const codigos = filterCodigos ?? store.getAllCodigos("ctercero");
-    const builder = this.registry.get("contact");
 
-    const items: SupplierContact[] = [];
-    const skippedDetails: SkippedDetail[] = [];
-
-    for (const codigo of codigos) {
-      const ctercero = store.getSingle("ctercero", codigo);
-      if (!ctercero) {
-        skippedDetails.push({ CodSupplier: codigo, reason: "Not found in store (ctercero)" });
-        continue;
-      }
-      const gproveed = store.getSingle("gproveed", codigo);
-      if (!gproveed) {
-        skippedDetails.push({ CodSupplier: codigo, reason: "Incomplete data: missing gproveed" });
-        continue;
-      }
-      const direcciones = store.getArray("cterdire", codigo);
-      if (direcciones.length === 0) {
-        skippedDetails.push({ CodSupplier: codigo, reason: "No addresses found (cterdire)" });
-        continue;
-      }
-      const result = builder?.build(codigo) as SupplierContact[] | null;
-      if (result) {
-        items.push(...result);
-      } else {
-        skippedDetails.push({ CodSupplier: codigo, reason: "Builder returned null" });
-      }
-    }
+    const { items, skippedDetails } = handler.deleteAll(codigos);
 
     const { successBatches, failedBatches, totalBatches } =
-      await this.sendBatches("PUT", "/ingest-api/suppliers-contacts", items, "sync", "contact");
-
-    return {
-      operation: "sync",
-      target: "contact",
-      totalCodsuppliers: codigos.length,
-      totalItems: items.length,
-      batches: totalBatches,
-      successBatches,
-      failedBatches,
-      skipped: skippedDetails.length,
-      skippedDetails,
-      durationMs: Date.now() - start,
-    };
-  }
-
-  private async doDeleteSuppliers(filterCodigos?: string[]): Promise<BulkResult> {
-    const start = Date.now();
-    const codigos = filterCodigos ?? store.getAllCodigos("ctercero");
-    const now = new Date().toISOString();
-
-    const items: SupplierDeletion[] = [];
-    const skippedDetails: SkippedDetail[] = [];
-
-    for (const codigo of codigos) {
-      const ctercero = store.getSingle("ctercero", codigo);
-      if (!ctercero) {
-        skippedDetails.push({ CodSupplier: codigo, reason: "Not found in store (ctercero)" });
-        continue;
-      }
-      items.push({ CodSupplier: codigo, DeletionDate: now });
-    }
-
-    const { successBatches, failedBatches, totalBatches } =
-      await this.sendBatches("DELETE", "/ingest-api/suppliers", items, "delete", "supplier");
+      await this.sendBatches("DELETE", entity.apiPath, items, "delete", type);
 
     return {
       operation: "delete",
-      target: "supplier",
-      totalCodsuppliers: codigos.length,
-      totalItems: items.length,
-      batches: totalBatches,
-      successBatches,
-      failedBatches,
-      skipped: skippedDetails.length,
-      skippedDetails,
-      durationMs: Date.now() - start,
-    };
-  }
-
-  private async doDeleteContacts(filterCodigos?: string[]): Promise<BulkResult> {
-    const start = Date.now();
-    const codigos = filterCodigos ?? store.getAllCodigos("ctercero");
-    const now = new Date().toISOString();
-
-    const items: SupplierContactDeletion[] = [];
-    const skippedDetails: SkippedDetail[] = [];
-
-    for (const codigo of codigos) {
-      const ctercero = store.getSingle("ctercero", codigo);
-      if (!ctercero) {
-        skippedDetails.push({ CodSupplier: codigo, reason: "Not found in store (ctercero)" });
-        continue;
-      }
-      const nif = ctercero["cif"];
-      if (nif == null || String(nif).trim() === "") {
-        skippedDetails.push({ CodSupplier: codigo, reason: "Missing NIF (cif)" });
-        continue;
-      }
-      items.push({
-        CodSupplier: codigo,
-        NIF: String(nif).trim(),
-        DeletionDate: now,
-      });
-    }
-
-    const { successBatches, failedBatches, totalBatches } =
-      await this.sendBatches("DELETE", "/ingest-api/suppliers-contacts", items, "delete", "contact");
-
-    return {
-      operation: "delete",
-      target: "contact",
+      target: type,
       totalCodsuppliers: codigos.length,
       totalItems: items.length,
       batches: totalBatches,

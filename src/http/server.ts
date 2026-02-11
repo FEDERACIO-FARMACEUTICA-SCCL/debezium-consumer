@@ -4,13 +4,8 @@ import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
 import { logger } from "../logger";
 import { BulkService, BulkOperationInProgressError } from "../bulk/bulk-service";
-import {
-  healthSchema,
-  syncSuppliersSchema,
-  syncContactsSchema,
-  deleteSuppliersSchema,
-  deleteContactsSchema,
-} from "./schemas";
+import { ENTITY_REGISTRY } from "../domain/entity-registry";
+import { healthSchema, makeTriggerSchema } from "./schemas";
 
 interface TriggerBody {
   CodSupplier?: string[];
@@ -78,26 +73,22 @@ export async function startServer(opts: ServerOptions): Promise<FastifyInstance>
     return { status: "ok" };
   });
 
-  // Trigger routes
-  app.post("/triggers/suppliers", { schema: syncSuppliersSchema }, async (request, reply) => {
-    const { CodSupplier } = (request.body as TriggerBody) ?? {};
-    return handleBulk(reply, () => opts.bulkService.syncSuppliers(CodSupplier));
-  });
+  // Dynamic trigger routes from entity registry
+  for (const entity of ENTITY_REGISTRY) {
+    app.post(`/triggers/${entity.triggerPath}`, {
+      schema: makeTriggerSchema(entity.swagger.sync),
+    }, async (request, reply) => {
+      const { CodSupplier } = (request.body as TriggerBody) ?? {};
+      return handleBulk(reply, () => opts.bulkService.sync(entity.type, CodSupplier));
+    });
 
-  app.delete("/triggers/suppliers", { schema: deleteSuppliersSchema }, async (request, reply) => {
-    const { CodSupplier } = (request.body as TriggerBody) ?? {};
-    return handleBulk(reply, () => opts.bulkService.deleteSuppliers(CodSupplier));
-  });
-
-  app.post("/triggers/contacts", { schema: syncContactsSchema }, async (request, reply) => {
-    const { CodSupplier } = (request.body as TriggerBody) ?? {};
-    return handleBulk(reply, () => opts.bulkService.syncContacts(CodSupplier));
-  });
-
-  app.delete("/triggers/contacts", { schema: deleteContactsSchema }, async (request, reply) => {
-    const { CodSupplier } = (request.body as TriggerBody) ?? {};
-    return handleBulk(reply, () => opts.bulkService.deleteContacts(CodSupplier));
-  });
+    app.delete(`/triggers/${entity.triggerPath}`, {
+      schema: makeTriggerSchema(entity.swagger.delete),
+    }, async (request, reply) => {
+      const { CodSupplier } = (request.body as TriggerBody) ?? {};
+      return handleBulk(reply, () => opts.bulkService.delete(entity.type, CodSupplier));
+    });
+  }
 
   await app.listen({ port: opts.port, host: "0.0.0.0" });
   logger.info({ tag: "HTTP", port: opts.port }, `Trigger server listening on port ${opts.port}`);

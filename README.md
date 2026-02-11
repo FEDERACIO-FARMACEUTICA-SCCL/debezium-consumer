@@ -98,11 +98,13 @@ informix-consumer/
     │
     ├── types/
     │   ├── debezium.ts              # Tipos para eventos CDC de Debezium
-    │   └── payloads.ts              # Interfaces Supplier, SupplierContact, PayloadType
+    │   ├── payloads.ts              # Interfaces Supplier, SupplierContact, PayloadType
+    │   └── deletions.ts             # Interfaces de borrado, SkippedDetail, BulkResult
     │
     ├── domain/
-    │   ├── table-registry.ts        # Fuente unica de verdad para tablas y mappings
-    │   ├── store.ts                 # InMemoryStore data-driven desde registry
+    │   ├── table-registry.ts        # Fuente unica de verdad para TABLAS y mappings CDC
+    │   ├── entity-registry.ts       # Fuente unica de verdad para ENTIDADES (API, triggers, labels)
+    │   ├── store.ts                 # InMemoryStore data-driven desde table-registry
     │   ├── watched-fields.ts        # Deteccion de cambios en campos monitorizados
     │   └── country-codes.ts         # Mapping ISO3 → ISO2 para codigos de pais
     │
@@ -123,36 +125,58 @@ informix-consumer/
     │   ├── dispatcher.ts            # Interface PayloadDispatcher + HttpDispatcher + LogDispatcher
     │   └── http-client.ts           # ApiClient: JWT auth + renovacion automatica + HTTP calls
     │
+    ├── bulk/
+    │   ├── bulk-handler.ts          # Interface BulkHandler (syncAll/deleteAll por entidad)
+    │   ├── bulk-service.ts          # Motor generico: sync(type)/delete(type) + batching + mutex
+    │   └── handlers/
+    │       ├── supplier-handler.ts  # SupplierBulkHandler implements BulkHandler
+    │       └── contact-handler.ts   # ContactBulkHandler implements BulkHandler
+    │
     └── http/
-        ├── server.ts               # Fastify server: Trigger API + Swagger UI + health
-        └── schemas.ts              # JSON Schemas OpenAPI para todas las rutas
+        ├── server.ts               # Fastify server: rutas dinamicas desde ENTITY_REGISTRY + Swagger
+        └── schemas.ts              # makeTriggerSchema() factory + schemas compartidos
 ```
 
 ### Capas y responsabilidades
 
 | Capa | Directorio | Responsabilidad |
 |------|-----------|-----------------|
-| **Types** | `types/` | Interfaces compartidas (Debezium events, payload shapes) |
-| **Domain** | `domain/` | Table registry (fuente unica de verdad), store en memoria, deteccion de cambios |
+| **Types** | `types/` | Interfaces compartidas (Debezium events, payload shapes, deletion shapes) |
+| **Domain** | `domain/` | Table registry (tablas CDC), entity registry (entidades API), store en memoria, deteccion de cambios |
 | **Payloads** | `payloads/` | Builders de payloads (patron Strategy via `PayloadBuilder` interface) + helpers compartidos (`payload-utils.ts`) |
 | **Kafka** | `kafka/` | Infraestructura Kafka pura, snapshot state machine, orquestacion de mensajes |
 | **Dispatch** | `dispatch/` | CDC debounce + aggregation, envio via HTTP (`HttpDispatcher` + `ApiClient`), buffer de reintentos |
-| **HTTP** | `http/` | Trigger API (Fastify): bulk sync/delete endpoints, Swagger UI, health check |
+| **Bulk** | `bulk/` | Operaciones bulk para la Trigger API: `BulkHandler` por entidad + `BulkService` generico |
+| **HTTP** | `http/` | Trigger API (Fastify): rutas dinamicas desde entity-registry, Swagger UI, health check |
 
-### Como añadir un nuevo payload type
+### Dos registries: tablas vs entidades
 
-Para añadir, por ejemplo, un payload `warehouse` alimentado por `ctercero` + `calmacen`:
+El proyecto tiene dos registries data-driven complementarios:
 
-1. Añadir fila en `TABLE_REGISTRY` (`domain/table-registry.ts`) para `calmacen` + añadir `"warehouse"` al array `payloads` de los campos de `ctercero` que apliquen
-2. Añadir `"warehouse"` al tipo `PayloadType` en `types/payloads.ts`
-3. Crear `payloads/warehouse.ts` implementando `PayloadBuilder`
-4. Registrar en `index.ts`: `registry.register(new WarehouseBuilder())`
+- **`domain/table-registry.ts`** — define las **tablas** del pipeline CDC: que campos monitorizar, como almacenar en el store, que payload types alimenta cada campo. Es la fuente de verdad para `store.ts`, `watched-fields.ts`, `message-handler.ts`.
 
-**Zero cambios** en consumer, message handler, pending buffer, store o watched fields.
+- **`domain/entity-registry.ts`** — define las **entidades** de la capa API/Trigger: tipo, label para logs, ruta HTTP del trigger, endpoint de la API externa, y metadatos Swagger. Es la fuente de verdad para `server.ts`, `schemas.ts`, `dispatcher.ts`, `cdc-debouncer.ts`, `pending-buffer.ts`, `bulk-service.ts`.
+
+Ambos registries se importan como arrays constantes con lookups derivados computados una vez al cargar el modulo.
+
+### Como añadir una nueva entidad
+
+Para añadir, por ejemplo, una entidad `warehouse`:
+
+1. Añadir entrada en `ENTITY_REGISTRY` (`domain/entity-registry.ts`) — type, label, triggerPath, apiPath, swagger
+2. Añadir fila en `TABLE_REGISTRY` (`domain/table-registry.ts`) para la nueva tabla + añadir el tipo a `feedsPayloads` de tablas existentes si aplica
+3. Añadir `"warehouse"` al union `PayloadType` en `types/payloads.ts`
+4. Crear `payloads/warehouse.ts` implementando `PayloadBuilder`
+5. Crear `bulk/handlers/warehouse-handler.ts` implementando `BulkHandler` (metodos `syncAll` + `deleteAll`)
+6. Registrar en `index.ts`:
+   - `registry.register(new WarehouseBuilder())`
+   - `bulkService.registerHandler(new WarehouseBulkHandler(registry))`
+
+**Zero cambios** en server.ts, schemas.ts, bulk-service.ts, dispatcher.ts, debouncer.ts, pending-buffer.ts, consumer, message handler, store o watched fields. Las rutas HTTP, los schemas Swagger y el routing de endpoints se generan automaticamente desde los registries.
 
 ## Tests
 
-Suite de tests unitarios con [vitest](https://vitest.dev/). 150 tests en 10 ficheros, ejecucion en ~500ms. Sin dependencias externas (sin Kafka, sin HTTP real).
+Suite de tests unitarios con [vitest](https://vitest.dev/). **164 tests** en 13 ficheros, ejecucion en ~500ms. Sin dependencias externas (sin Kafka, sin HTTP real).
 
 ```bash
 npm test              # ejecutar toda la suite una vez
@@ -171,6 +195,7 @@ Los tests estan colocados junto al codigo fuente (`*.test.ts`), excluidos del bu
 | `domain/country-codes.test.ts` | `toISO2` (ISO3→ISO2 mapping) | 11 |
 | `domain/watched-fields.test.ts` | `detectChanges` (deteccion de campos cambiados) | 10 |
 | `kafka/snapshot-tracker.test.ts` | `SnapshotTracker` (maquina de estados) | 11 |
+| `domain/entity-registry.test.ts` | `ENTITY_REGISTRY`, lookups derivados, unicidad | 7 |
 
 **Tier 2 — Logica de negocio** (con mocks de store, logger, timers):
 
@@ -181,7 +206,9 @@ Los tests estan colocados junto al codigo fuente (`*.test.ts`), excluidos del bu
 | `payloads/supplier-contact.test.ts` | `SupplierContactBuilder` (N direcciones, Country, null fields) | 12 |
 | `dispatch/cdc-debouncer.test.ts` | `CdcDebouncer` (debounce, merge, batching, stop) | 12 |
 | `dispatch/pending-buffer.test.ts` | Pending buffer (retry, eviction, anti-overlap) | 11 |
-| `bulk/bulk-service.test.ts` | `BulkService` (sync/delete, skips, mutex, batching) | 23 |
+| `bulk/bulk-service.test.ts` | `BulkService` generico (sync/delete por tipo, batching, mutex) | 14 |
+| `bulk/handlers/supplier-handler.test.ts` | `SupplierBulkHandler` (syncAll/deleteAll, skippedDetails) | 7 |
+| `bulk/handlers/contact-handler.test.ts` | `ContactBulkHandler` (syncAll/deleteAll, skippedDetails) | 9 |
 
 ### Ejecutar un solo fichero
 
@@ -367,6 +394,16 @@ El delay maximo para un evento individual es `DEBOUNCE_WINDOW_MS` (1s por defect
 
 Servidor Fastify en puerto 3001 que permite lanzar operaciones bulk de sincronizacion y borrado contra la Ingest API. Protegido con Bearer token (`TRIGGER_API_KEY`).
 
+### Arquitectura de la Trigger API
+
+Las rutas se generan **automaticamente** desde `ENTITY_REGISTRY` (`domain/entity-registry.ts`). Para cada entidad registrada se crean 2 rutas:
+- `POST /triggers/{triggerPath}` → sync bulk
+- `DELETE /triggers/{triggerPath}` → delete bulk
+
+Los schemas OpenAPI se generan via la factory `makeTriggerSchema()` usando los metadatos swagger de cada entidad. Esto significa que al añadir una nueva entidad al registry, las rutas y la documentacion Swagger se crean automaticamente sin tocar `server.ts` ni `schemas.ts`.
+
+Cada entidad tiene un `BulkHandler` dedicado (`bulk/handlers/`) que implementa la logica de `syncAll` y `deleteAll`. El `BulkService` es un motor generico que delega en el handler correcto segun el tipo.
+
 ### Endpoints
 
 | Metodo | Ruta | Descripcion |
@@ -438,24 +475,24 @@ curl -X DELETE http://localhost:3001/triggers/suppliers \
 }
 ```
 
-El campo `skippedDetails` es un array con una entrada por cada codigo que no se pudo procesar. Cada entrada indica el `CodSupplier` y el motivo concreto del skip. Los motivos posibles dependen de la operacion:
+El campo `skippedDetails` es un array con una entrada por cada codigo que no se pudo procesar. Cada entrada indica el `CodSupplier` y el motivo concreto del skip. Los motivos posibles dependen del handler y la operacion:
 
-| Operacion | Condicion | Reason |
-|---|---|---|
-| sync suppliers | `ctercero` no existe en store | `"Not found in store (ctercero)"` |
-| sync suppliers | `gproveed` no existe en store | `"Incomplete data: missing gproveed"` |
-| sync suppliers | builder retorna null | `"Builder returned null"` |
-| sync contacts | `ctercero` no existe en store | `"Not found in store (ctercero)"` |
-| sync contacts | `gproveed` no existe en store | `"Incomplete data: missing gproveed"` |
-| sync contacts | sin direcciones en store | `"No addresses found (cterdire)"` |
-| sync contacts | builder retorna null | `"Builder returned null"` |
-| delete suppliers | `ctercero` no existe en store | `"Not found in store (ctercero)"` |
-| delete contacts | `ctercero` no existe en store | `"Not found in store (ctercero)"` |
-| delete contacts | NIF nulo o vacio | `"Missing NIF (cif)"` |
+| Handler | Operacion | Condicion | Reason |
+|---|---|---|---|
+| `SupplierBulkHandler` | sync | `ctercero` no existe en store | `"Not found in store (ctercero)"` |
+| `SupplierBulkHandler` | sync | `gproveed` no existe en store | `"Incomplete data: missing gproveed"` |
+| `SupplierBulkHandler` | sync | builder retorna null | `"Builder returned null"` |
+| `SupplierBulkHandler` | delete | `ctercero` no existe en store | `"Not found in store (ctercero)"` |
+| `ContactBulkHandler` | sync | `ctercero` no existe en store | `"Not found in store (ctercero)"` |
+| `ContactBulkHandler` | sync | `gproveed` no existe en store | `"Incomplete data: missing gproveed"` |
+| `ContactBulkHandler` | sync | sin direcciones en store | `"No addresses found (cterdire)"` |
+| `ContactBulkHandler` | sync | builder retorna null | `"Builder returned null"` |
+| `ContactBulkHandler` | delete | `ctercero` no existe en store | `"Not found in store (ctercero)"` |
+| `ContactBulkHandler` | delete | NIF nulo o vacio | `"Missing NIF (cif)"` |
 
 ### Swagger UI (documentacion interactiva)
 
-La API incluye documentacion OpenAPI 3.0.3 auto-generada con `@fastify/swagger` + `@fastify/swagger-ui`. Los schemas se definen inline en cada ruta — cuando se añadan o modifiquen rutas, la documentacion se actualiza automaticamente.
+La API incluye documentacion OpenAPI 3.0.3 auto-generada con `@fastify/swagger` + `@fastify/swagger-ui`. Los schemas se generan via la factory `makeTriggerSchema()` a partir de los metadatos swagger del entity-registry — cuando se añaden nuevas entidades, la documentacion se actualiza automaticamente.
 
 | URL | Auth | Proposito |
 |---|---|---|
@@ -615,7 +652,7 @@ Nota: los campos `CHAR` de Informix vienen con espacios al final (padding). El c
 - **HTTP server**: Fastify 5 + `@fastify/swagger` + `@fastify/swagger-ui` (OpenAPI 3.0.3)
 - **Logging**: `pino` (JSON estructurado, zero-dep)
 - **Monitoring**: Grafana 11.5 + Loki 3.4 + Promtail 3.4
-- **Testing**: `vitest` (150 tests, ~500ms)
+- **Testing**: `vitest` (164 tests, ~500ms)
 - **Plataforma Docker**: `linux/amd64` (requerido por librdkafka en Apple Silicon)
 
 ## Seguridad y resiliencia
@@ -635,6 +672,7 @@ Nota: los campos `CHAR` de Informix vienen con espacios al final (padding). El c
 2. ~~Implementar servidor HTTP con Trigger API (bulk sync/delete endpoints)~~ ✓
 3. ~~Documentacion Swagger/OpenAPI auto-generada para la Trigger API~~ ✓
 4. ~~Tests unitarios (Tier 1 + Tier 2)~~ ✓
-5. Manejo de reintentos HTTP y dead letter queue
-6. Filtrado por tipo de operacion si es necesario
-7. Alertas en Grafana (errores sostenidos, pending buffer creciendo)
+5. ~~Refactoring entity-registry para escalabilidad~~ ✓
+6. Manejo de reintentos HTTP y dead letter queue
+7. Filtrado por tipo de operacion si es necesario
+8. Alertas en Grafana (errores sostenidos, pending buffer creciendo)

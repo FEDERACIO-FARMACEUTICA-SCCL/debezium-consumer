@@ -16,7 +16,7 @@ export interface SkippedDetail {
 
 export interface BulkResult {
   operation: "sync" | "delete";
-  target: "supplier" | "contact";
+  target: string;
   totalCodsuppliers: number;
   totalItems: number;
   batches: number;

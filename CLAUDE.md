@@ -58,11 +58,13 @@ src/
   types/
     debezium.ts                 # Interfaces Debezium: DebeziumEvent, DebeziumSource, Operation, OP_LABELS
     payloads.ts                 # Interfaces Supplier, SupplierContact, PayloadType, AnyPayload
+    deletions.ts                # SupplierDeletion, SupplierContactDeletion, SkippedDetail, BulkResult
 
   domain/
-    table-registry.ts           # Fuente unica de verdad para tablas, watched fields y payload mappings
-    store.ts                    # Clase InMemoryStore (data-driven desde registry)
-    watched-fields.ts           # detectChanges() lee WATCHED_FIELDS del registry
+    table-registry.ts           # Fuente unica de verdad para TABLAS: watched fields, store kinds, payload mappings
+    entity-registry.ts          # Fuente unica de verdad para ENTIDADES: type, label, triggerPath, apiPath, swagger
+    store.ts                    # Clase InMemoryStore (data-driven desde table-registry)
+    watched-fields.ts           # detectChanges() lee WATCHED_FIELDS del table-registry
     country-codes.ts            # Mapping ISO3 → ISO2 para codigos de pais
 
   payloads/
@@ -82,10 +84,30 @@ src/
     dispatcher.ts               # Interface PayloadDispatcher + LogDispatcher + HttpDispatcher
     http-client.ts              # ApiClient con auth JWT + renovacion automatica
 
+  bulk/
+    bulk-handler.ts             # Interface BulkHandler (syncAll/deleteAll) + BulkSyncResult/BulkDeletionResult
+    bulk-service.ts             # Motor generico: sync(type)/delete(type) + batching + mutex
+    handlers/
+      supplier-handler.ts       # SupplierBulkHandler implements BulkHandler
+      contact-handler.ts        # ContactBulkHandler implements BulkHandler
+
   http/
-    server.ts                   # Fastify server: Trigger API + Swagger UI + health check
-    schemas.ts                  # JSON Schemas OpenAPI para todas las rutas
+    server.ts                   # Fastify server: rutas dinamicas desde ENTITY_REGISTRY + Swagger UI + health
+    schemas.ts                  # makeTriggerSchema() factory + healthSchema + schemas compartidos
 ```
+
+### Dos registries: tablas vs entidades
+
+El proyecto tiene dos registries complementarios:
+
+- **`domain/table-registry.ts`** — define las **tablas** del pipeline CDC: que campos monitorizar, como almacenar en el store, que payload types alimenta cada campo. Es la fuente de verdad para `store.ts`, `watched-fields.ts`, `message-handler.ts`.
+
+- **`domain/entity-registry.ts`** — define las **entidades** de la capa API/Trigger: tipo, label para logs, ruta HTTP del trigger, endpoint de la API externa, y metadatos Swagger. Es la fuente de verdad para `server.ts`, `schemas.ts`, `dispatcher.ts`, `cdc-debouncer.ts`, `pending-buffer.ts`.
+
+Lookups derivados del entity-registry (computados una vez al cargar modulo):
+- `ENTITY_MAP`: `Map<PayloadType, EntityDefinition>`
+- `ENTITY_LABELS`: `Record<string, string>` — para logging (`{ supplier: "Supplier", contact: "SupplierContact" }`)
+- `ENTITY_ENDPOINTS`: `Record<string, string>` — para dispatch HTTP (`{ supplier: "/ingest-api/suppliers", ... }`)
 
 ### Flujo de datos
 
@@ -96,18 +118,31 @@ src/
 5. Al hacer flush: construye payloads desde el store (que ya tiene el estado final), agrupa items por tipo y envia en batches
 6. Si un builder retorna null, el codigo va al `pending-buffer` para reintentos
 
-### Como añadir un nuevo payload type
+### Como añadir una nueva entidad
 
-1. Añadir fila en `TABLE_REGISTRY` para la nueva tabla + añadir el tipo a `feedsPayloads` de tablas existentes si aplica
-2. Añadir el tipo al union `PayloadType` en `types/payloads.ts`
-3. Crear `payloads/nuevo.ts` implementando `PayloadBuilder`
-4. Registrar en `index.ts`: `registry.register(new NuevoBuilder())`
+Para añadir, por ejemplo, una entidad `warehouse`:
 
-**Zero cambios** en consumer, message handler, pending buffer, store o watched fields.
+1. Añadir entrada en `ENTITY_REGISTRY` (`domain/entity-registry.ts`) — type, label, triggerPath, apiPath, swagger
+2. Añadir fila en `TABLE_REGISTRY` (`domain/table-registry.ts`) para la nueva tabla + añadir el tipo a `feedsPayloads` de tablas existentes si aplica
+3. Añadir `"warehouse"` al union `PayloadType` en `types/payloads.ts`
+4. Crear `payloads/warehouse.ts` implementando `PayloadBuilder`
+5. Crear `bulk/handlers/warehouse-handler.ts` implementando `BulkHandler` (metodos `syncAll` + `deleteAll`)
+6. Registrar en `index.ts`:
+   - `registry.register(new WarehouseBuilder())`
+   - `bulkService.registerHandler(new WarehouseBulkHandler(registry))`
+
+**Zero cambios** en server.ts, schemas.ts, bulk-service.ts, dispatcher.ts, debouncer.ts, pending-buffer.ts, consumer, message handler, store o watched fields.
+
+### Como añadir una nueva tabla (sin nueva entidad)
+
+Si solo necesitas añadir una tabla que alimenta entidades existentes (ej: una tabla que aporta datos a `supplier`):
+
+1. Añadir `TableDefinition` a `TABLE_REGISTRY` en `domain/table-registry.ts`
+2. Todos los lookups derivados (`TABLE_MAP`, `WATCHED_FIELDS`, `FIELD_TO_PAYLOADS`, `ALL_TOPICS`) se auto-actualizan
 
 ## Tests
 
-Suite de tests con **vitest**. 150 tests, ~500ms. Tests colocados junto al codigo fuente como `*.test.ts` (excluidos del build de TypeScript via `tsconfig.json`).
+Suite de tests con **vitest**. **164 tests** en 13 ficheros, ~500ms. Tests colocados junto al codigo fuente como `*.test.ts` (excluidos del build de TypeScript via `tsconfig.json`).
 
 ```bash
 npm test              # ejecutar toda la suite una vez
@@ -120,7 +155,7 @@ npm run test:watch    # modo watch (re-ejecuta al guardar)
 - `tsconfig.json` excluye `src/**/*.test.ts` del build
 - `.gitignore` incluye `coverage/`
 
-### Tier 1 — Funciones puras (4 ficheros)
+### Tier 1 — Funciones puras (5 ficheros)
 
 | Fichero test | Modulo bajo test | Que cubre |
 |---|---|---|
@@ -128,8 +163,9 @@ npm run test:watch    # modo watch (re-ejecuta al guardar)
 | `domain/country-codes.test.ts` | `toISO2` | ISO3→ISO2, lowercase, passthrough ISO2, null/undefined, codigos desconocidos |
 | `domain/watched-fields.test.ts` | `detectChanges` | CREATE/READ/UPDATE/DELETE, whitespace normalization, tabla desconocida, uppercase table |
 | `kafka/snapshot-tracker.test.ts` | `SnapshotTracker` | Estado inicial, transiciones por topic, flag `last`, topics vacios, duplicados |
+| `domain/entity-registry.test.ts` | `ENTITY_REGISTRY`, lookups | Campos requeridos, ENTITY_MAP, ENTITY_LABELS, ENTITY_ENDPOINTS, unicidad |
 
-### Tier 2 — Logica de negocio (6 ficheros)
+### Tier 2 — Logica de negocio (8 ficheros)
 
 | Fichero test | Modulo bajo test | Que cubre |
 |---|---|---|
@@ -138,7 +174,9 @@ npm run test:watch    # modo watch (re-ejecuta al guardar)
 | `payloads/supplier-contact.test.ts` | `SupplierContactBuilder` | 1 y N direcciones, datos incompletos, Country ISO3→ISO2, campos null, Status |
 | `dispatch/cdc-debouncer.test.ts` | `CdcDebouncer` | Debounce timer, merge types/codigos, buffer overflow, batching, builder null→pending, dispatcher error, stop() |
 | `dispatch/pending-buffer.test.ts` | `addPending`, `startRetryLoop`, `stopRetryLoop` | Retry exitoso/parcial, max retries, age eviction, capacidad maxima, anti-overlap, dispatch error |
-| `bulk/bulk-service.test.ts` | `BulkService` | sync/delete suppliers/contacts, skippedDetails, batching, batch failure, mutex, filtro codigos |
+| `bulk/bulk-service.test.ts` | `BulkService` | sync/delete generico por tipo, skippedDetails, batching, batch failure, mutex, filtro codigos |
+| `bulk/handlers/supplier-handler.test.ts` | `SupplierBulkHandler` | syncAll/deleteAll: happy path, ctercero missing, gproveed missing, builder null, multiples codigos |
+| `bulk/handlers/contact-handler.test.ts` | `ContactBulkHandler` | syncAll/deleteAll: happy path, ctercero/gproveed missing, sin direcciones, builder null, NIF null/empty |
 
 ### Estrategia de mocking
 
@@ -147,20 +185,26 @@ npm run test:watch    # modo watch (re-ejecuta al guardar)
 - **Timers**: `vi.useFakeTimers()` + `vi.advanceTimersByTimeAsync()` para CdcDebouncer y PendingBuffer
 - **PendingBuffer**: `vi.resetModules()` + `import()` dinamico en cada test para resetear estado module-level
 - **PayloadRegistry/Dispatcher/ApiClient**: mocks manuales con `vi.fn()`
+- **BulkHandler**: mock manual `{ type, syncAll: vi.fn(), deleteAll: vi.fn() }` para tests del BulkService generico
+- **Entity Registry**: `vi.mock("../domain/entity-registry")` con ENTITY_MAP mock para tests de BulkService
 - **watched-fields.test.ts**: `vi.mock("./table-registry")` para controlar `WATCHED_FIELDS` sin depender del registry real
 - **store.test.ts**: instancia `new InMemoryStore(miniRegistry)` con un registry custom (no usa el singleton global)
 
-### Como añadir tests para un nuevo payload type
+### Como añadir tests para una nueva entidad
 
-1. Crear `payloads/nuevo.test.ts`
-2. Mockear `store` y `logger` igual que en `supplier.test.ts`
-3. Controlar retornos de `store.getSingle`/`store.getArray` por tabla
-4. Verificar: build exitoso, datos incompletos → null, campos null, transformaciones
+1. Crear `payloads/nuevo.test.ts` — testear el `PayloadBuilder`
+   - Mockear `store` y `logger` igual que en `supplier.test.ts`
+   - Controlar retornos de `store.getSingle`/`store.getArray` por tabla
+   - Verificar: build exitoso, datos incompletos → null, campos null, transformaciones
+2. Crear `bulk/handlers/nuevo-handler.test.ts` — testear el `BulkHandler`
+   - Mockear `store` y `logger`
+   - Crear mock de `PayloadRegistry` con builder del tipo correspondiente
+   - Verificar: syncAll/deleteAll con happy path, skippedDetails por cada condicion
 
 ## Detalles tecnicos importantes
 
 ### API externa (Ingest API)
-- `HttpDispatcher` envia payloads al endpoint `PUT /ingest-api/suppliers` (y en el futuro `/ingest-api/suppliers-contacts`)
+- `HttpDispatcher` envia payloads usando `ENTITY_ENDPOINTS[type]` del entity-registry para determinar la ruta
 - Autenticacion JWT via `POST /ingest-api/token` con `application/x-www-form-urlencoded` (username + password)
 - El `ApiClient` gestiona el ciclo de vida del token: obtiene, cachea, y renueva automaticamente 60s antes de expirar
 - Si una llamada recibe 401, renueva token y reintenta UNA vez
@@ -178,11 +222,30 @@ npm run test:watch    # modo watch (re-ejecuta al guardar)
   - `fromBeginning` va en el consumer config, NO en `subscribe()`
   - `subscribe()` acepta `{ topics: string[] }`, no `{ topic, fromBeginning }`
 
-### Table Registry (fuente unica de verdad)
+### Table Registry (fuente unica de verdad para tablas)
 - `domain/table-registry.ts` define `TABLE_REGISTRY` con todas las tablas, sus store kinds, watched fields (con mapping campo→payloads) y topics
 - Lookups derivados computados una vez al cargar modulo: `TABLE_MAP`, `WATCHED_FIELDS`, `FIELD_TO_PAYLOADS`, `ALL_TOPICS`
 - `FIELD_TO_PAYLOADS` mapea `"tabla.campo"` → `Set<PayloadType>`, permitiendo granularidad a nivel de campo
 - Elimina la necesidad de hardcodear nombres de tabla en multiples ficheros
+
+### Entity Registry (fuente unica de verdad para entidades)
+- `domain/entity-registry.ts` define `ENTITY_REGISTRY` con todas las entidades y sus metadatos
+- Cada entrada tiene: `type` (PayloadType), `label` (para logs), `triggerPath` (segmento URL), `apiPath` (endpoint API externa), `swagger` (summary + description para sync y delete)
+- Lookups derivados: `ENTITY_MAP`, `ENTITY_LABELS`, `ENTITY_ENDPOINTS`
+- Usado por: `server.ts` (rutas dinamicas), `schemas.ts` (factory), `dispatcher.ts` (endpoints), `cdc-debouncer.ts` y `pending-buffer.ts` (labels para logs), `bulk-service.ts` (apiPath para batches)
+
+### BulkHandler y BulkService (patron Strategy para operaciones bulk)
+
+Cada entidad implementa `BulkHandler` (`bulk/bulk-handler.ts`) con dos metodos:
+- `syncAll(codigos)` → valida datos en el store, llama al builder, retorna `{ items, skippedDetails }`
+- `deleteAll(codigos)` → valida datos en el store, construye deletion payloads, retorna `{ items, skippedDetails }`
+
+`BulkService` (`bulk/bulk-service.ts`) es un motor generico:
+- `registerHandler(handler)` — registra un BulkHandler por tipo
+- `sync(type, codigos?)` / `delete(type, codigos?)` — delega al handler, envia batches via `ApiClient`
+- Obtiene `apiPath` desde `ENTITY_MAP` del entity-registry
+- Mutex: solo permite una operacion bulk a la vez (`BulkOperationInProgressError` si hay otra en curso)
+- No conoce la logica de negocio de ninguna entidad — es 100% generico
 
 ### Dispatch de payloads (que se envia y cuando)
 La decision de que payloads enviar se toma a nivel de **campo**, no de tabla. Cada watched field en el registry declara que payload types alimenta:
@@ -208,6 +271,7 @@ Capa de agregacion entre el message-handler y el dispatcher. Resuelve el problem
 
 - **`enqueue(codigo, types)`**: merge `types` en `buffer.get(codigo)` (o crea nueva entrada). Si `buffer.size >= maxBufferSize` → flush inmediato. Si no hay timer activo → inicia `setTimeout(flush, windowMs)`.
 - **`flush()`**: snapshot + clear del buffer. Para cada `(codigo, types)`: `builder.build(codigo)` → acumula en `Map<PayloadType, AnyPayload[]>`. Luego despacha un PUT por tipo (particionado en batches de `batchSize`). Si un build retorna null → `addPending()`.
+- **Labels de log**: usa `ENTITY_LABELS[type]` del entity-registry (no hay tagMap hardcodeado).
 - **`stop()`**: cancela timer + flush final (llamado en shutdown antes de `server.close()`).
 - **Anti-overlap**: flag `flushing` impide flushes concurrentes.
 - **Seguridad**: el store ya tiene el estado final cuando se hace flush (se actualiza con cada evento ANTES de encolar).
@@ -229,7 +293,8 @@ Tag de logging: `"Debounce"`. Queries utiles en Grafana:
 
 ### Pending buffer (reintentos)
 - Guarda codigos con datos incompletos para reintentar cada 2s (max 5 reintentos o 60s TTL)
-- Guarda anti-overlap: flag `retrying` impide que un nuevo ciclo de `setInterval` se solape con uno que aun no ha terminado (dispatch es async)
+- Labels de log: usa `ENTITY_LABELS[type]` del entity-registry (no hay tagMap hardcodeado)
+- Anti-overlap: flag `retrying` impide que un nuevo ciclo de `setInterval` se solape con uno que aun no ha terminado (dispatch es async)
 - Capacidad maxima 10.000 entradas; al llegar al limite evicta la mas antigua con `logger.warn`
 - Los dispatch se hacen con `await` + try/catch; un fallo en un tipo no bloquea los demas
 
@@ -264,7 +329,7 @@ Tag de logging: `"Debounce"`. Queries utiles en Grafana:
 
 ### Logging (pino)
 - Todos los logs salen como JSON estructurado via `pino`. No queda ningun `console.log` en el codigo.
-- Cada log lleva un campo `tag` que permite filtrar en Grafana: `CDC`, `StoreRebuild`, `Watch`, `Supplier`, `SupplierContact`, `PendingBuffer`, `Debounce`, `Consumer`, `Dispatcher`.
+- Cada log lleva un campo `tag` que permite filtrar en Grafana: `CDC`, `StoreRebuild`, `Watch`, `Supplier`, `SupplierContact`, `PendingBuffer`, `Debounce`, `Consumer`, `Dispatcher`, `BulkSync`.
 - `LOG_LEVEL=info` (default): metadatos solamente (tabla, operacion, campos cambiados, codigo). No se loguean valores PII.
 - `LOG_LEVEL=debug`: incluye payloads completos (Supplier/SupplierContact bodies), valores before/after de campos, y mensajes non-CDC. Solo usar en desarrollo.
 
@@ -272,33 +337,36 @@ Tag de logging: `"Debounce"`. Queries utiles en Grafana:
 Los topics siguen el patron `{prefix}.{schema}.{table}` donde prefix=`informix` (configurado en Debezium como `topic.prefix`). No incluyen el nombre de la base de datos en el path. Los topics default se derivan automaticamente de `ALL_TOPICS` en el table registry.
 
 ### Trigger API (Fastify + Swagger)
-- Servidor Fastify en puerto 3001 con 2 recursos (`/triggers/suppliers`, `/triggers/contacts`) x 2 metodos (POST=sync, DELETE=delete) + health check
+- Servidor Fastify en puerto 3001 con rutas dinamicas generadas desde `ENTITY_REGISTRY` + health check
+- Para cada entidad se crean 2 rutas: `POST /triggers/{triggerPath}` (sync) y `DELETE /triggers/{triggerPath}` (delete)
+- `makeTriggerSchema()` factory en `http/schemas.ts` genera el schema OpenAPI a partir de los metadatos swagger de cada entidad
+- `BulkService.sync(type, codigos?)` / `BulkService.delete(type, codigos?)` — metodos genericos que delegan en el `BulkHandler` correspondiente
 - `@fastify/swagger` genera spec OpenAPI 3.0.3; `@fastify/swagger-ui` sirve documentacion interactiva en `/docs`
 - Auth: Bearer token (`TRIGGER_API_KEY`) verificado en hook `onRequest`; se salta `/health` y `/docs*`
 - Auth: comparacion timing-safe con `crypto.timingSafeEqual` (previene timing attacks)
-- Schemas de rutas en `http/schemas.ts`: schemas compartidos (`BulkResultResponse`, `ErrorResponse`, `triggerResponses`, `TriggerBody`) + schemas individuales por ruta
+- Schemas compartidos en `http/schemas.ts`: `BulkResultResponse`, `ErrorResponse`, `triggerResponses`, `TriggerBody`
 - `TriggerBody.CodSupplier` tiene limites: `maxItems: 10_000` y `maxLength: 50` por item (Fastify valida automaticamente)
 - `persistAuthorization: true` guarda el token en localStorage entre recargas del Swagger UI
 - Orden de registro critico: swagger → swagger-ui → auth hook → rutas
 - Los endpoints de trigger aceptan un body JSON opcional `{ "CodSupplier": ["P001", "P002"] }` para filtrar por codigos. Sin body se procesan todos.
 - La respuesta incluye `skippedDetails: { CodSupplier, reason }[]` con el motivo concreto de cada skip
 
-#### skippedDetails — motivos de skip por metodo
+#### skippedDetails — motivos de skip por handler
 
-Cada metodo bulk valida existencia en el store **antes** de llamar al builder o construir el payload de borrado. Los codigos que no pasan la validacion se reportan en `skippedDetails` con una reason especifica:
+Cada `BulkHandler` valida existencia en el store **antes** de llamar al builder o construir el payload de borrado. Los codigos que no pasan la validacion se reportan en `skippedDetails` con una reason especifica:
 
-| Metodo | Condicion | Reason |
-|---|---|---|
-| `syncSuppliers` | `ctercero` no existe | `"Not found in store (ctercero)"` |
-| `syncSuppliers` | `gproveed` no existe | `"Incomplete data: missing gproveed"` |
-| `syncSuppliers` | builder retorna null | `"Builder returned null"` |
-| `syncContacts` | `ctercero` no existe | `"Not found in store (ctercero)"` |
-| `syncContacts` | `gproveed` no existe | `"Incomplete data: missing gproveed"` |
-| `syncContacts` | sin direcciones | `"No addresses found (cterdire)"` |
-| `syncContacts` | builder retorna null | `"Builder returned null"` |
-| `deleteSuppliers` | `ctercero` no existe | `"Not found in store (ctercero)"` |
-| `deleteContacts` | `ctercero` no existe | `"Not found in store (ctercero)"` |
-| `deleteContacts` | NIF nulo o vacio | `"Missing NIF (cif)"` |
+| Handler | Metodo | Condicion | Reason |
+|---|---|---|---|
+| `SupplierBulkHandler` | `syncAll` | `ctercero` no existe | `"Not found in store (ctercero)"` |
+| `SupplierBulkHandler` | `syncAll` | `gproveed` no existe | `"Incomplete data: missing gproveed"` |
+| `SupplierBulkHandler` | `syncAll` | builder retorna null | `"Builder returned null"` |
+| `SupplierBulkHandler` | `deleteAll` | `ctercero` no existe | `"Not found in store (ctercero)"` |
+| `ContactBulkHandler` | `syncAll` | `ctercero` no existe | `"Not found in store (ctercero)"` |
+| `ContactBulkHandler` | `syncAll` | `gproveed` no existe | `"Incomplete data: missing gproveed"` |
+| `ContactBulkHandler` | `syncAll` | sin direcciones | `"No addresses found (cterdire)"` |
+| `ContactBulkHandler` | `syncAll` | builder retorna null | `"Builder returned null"` |
+| `ContactBulkHandler` | `deleteAll` | `ctercero` no existe | `"Not found in store (ctercero)"` |
+| `ContactBulkHandler` | `deleteAll` | NIF nulo o vacio | `"Missing NIF (cif)"` |
 
 Ejemplo de respuesta con skips:
 ```json
@@ -328,6 +396,8 @@ Ejemplo de respuesta con skips:
 | `/triggers/suppliers` | DELETE | Bearer | `{ CodSupplier?: string[] }` | Delete bulk de suppliers |
 | `/triggers/contacts` | POST | Bearer | `{ CodSupplier?: string[] }` | Sync bulk de contacts |
 | `/triggers/contacts` | DELETE | Bearer | `{ CodSupplier?: string[] }` | Delete bulk de contacts |
+
+Las rutas `/triggers/*` se generan automaticamente desde `ENTITY_REGISTRY`. Al añadir una nueva entidad al registry, las rutas y schemas Swagger correspondientes se crean sin modificar `server.ts` ni `schemas.ts`.
 
 ### Monitoring (Grafana + Loki + Promtail)
 
@@ -361,6 +431,7 @@ Volumes Docker: `loki-data`, `grafana-data` (persistencia entre reinicios).
 2. ~~Implementar servidor HTTP con Trigger API (bulk sync/delete endpoints)~~ ✓
 3. ~~Documentacion Swagger/OpenAPI auto-generada para la Trigger API~~ ✓
 4. ~~Tests unitarios (Tier 1 + Tier 2)~~ ✓
-5. Manejo de reintentos HTTP y dead letter queue
-6. Filtrado por tipo de operacion si es necesario
-7. Alertas en Grafana (ej. errores sostenidos, pending buffer creciendo)
+5. ~~Refactoring entity-registry para escalabilidad~~ ✓
+6. Manejo de reintentos HTTP y dead letter queue
+7. Filtrado por tipo de operacion si es necesario
+8. Alertas en Grafana (ej. errores sostenidos, pending buffer creciendo)

@@ -1,6 +1,7 @@
 import { PayloadType, AnyPayload } from "../types/payloads";
 import { logger } from "../logger";
 import { ApiClient } from "./http-client";
+import { ENTITY_ENDPOINTS } from "../domain/entity-registry";
 
 export interface PayloadDispatcher {
   dispatch(type: PayloadType, codigo: string, payload: AnyPayload): Promise<void>;
@@ -12,16 +13,11 @@ export class LogDispatcher implements PayloadDispatcher {
   }
 }
 
-const ENDPOINTS: Record<PayloadType, string> = {
-  supplier: "/ingest-api/suppliers",
-  contact: "/ingest-api/suppliers-contacts",
-};
-
 export class HttpDispatcher implements PayloadDispatcher {
   constructor(private client: ApiClient) {}
 
   async dispatch(type: PayloadType, _codigo: string, payload: AnyPayload): Promise<void> {
-    const path = ENDPOINTS[type];
+    const path = ENTITY_ENDPOINTS[type];
     if (!path) return;
     await this.client.request("PUT", path, payload);
   }

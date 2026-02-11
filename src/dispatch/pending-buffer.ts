@@ -1,6 +1,7 @@
 import { PayloadType } from "../types/payloads";
 import { PayloadRegistry } from "../payloads/payload-builder";
 import { PayloadDispatcher } from "./dispatcher";
+import { ENTITY_LABELS } from "../domain/entity-registry";
 import { logger } from "../logger";
 
 interface PendingEntry {
@@ -80,11 +81,7 @@ export function startRetryLoop(
 
           const payload = builder.build(codigo);
           if (payload) {
-            const tagMap: Record<string, string> = {
-              supplier: "Supplier",
-              contact: "SupplierContact",
-            };
-            const tag = tagMap[type] ?? type;
+            const tag = ENTITY_LABELS[type] ?? type;
             try {
               await dispatcher.dispatch(type, codigo, payload);
               entry.types.delete(type);
