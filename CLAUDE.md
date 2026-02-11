@@ -76,7 +76,7 @@ src/
 
 1. `kafka/consumer.ts` recibe mensajes y delega a `MessageCallback`
 2. `kafka/message-handler.ts` parsea el envelope Debezium, actualiza el store, consulta el snapshot tracker
-3. Para eventos live CDC: detecta cambios en watched fields, busca `TABLE_TO_PAYLOADS` para saber que builders ejecutar
+3. Para eventos live CDC: detecta cambios en watched fields, calcula payload types a nivel de campo via `FIELD_TO_PAYLOADS`
 4. `payloads/supplier.ts` y `payloads/supplier-contact.ts` construyen payloads desde el store
 5. `dispatch/dispatcher.ts` recibe el payload construido (actualmente solo loguea)
 6. Si un builder retorna null, el codigo va al `pending-buffer` para reintentos
@@ -100,9 +100,28 @@ src/
   - `subscribe()` acepta `{ topics: string[] }`, no `{ topic, fromBeginning }`
 
 ### Table Registry (fuente unica de verdad)
-- `domain/table-registry.ts` define `TABLE_REGISTRY` con todas las tablas, sus store kinds, watched fields, payload mappings y topics
-- Lookups derivados computados una vez al cargar modulo: `TABLE_MAP`, `WATCHED_FIELDS`, `TABLE_TO_PAYLOADS`, `ALL_TOPICS`
+- `domain/table-registry.ts` define `TABLE_REGISTRY` con todas las tablas, sus store kinds, watched fields (con mapping campo→payloads) y topics
+- Lookups derivados computados una vez al cargar modulo: `TABLE_MAP`, `WATCHED_FIELDS`, `FIELD_TO_PAYLOADS`, `ALL_TOPICS`
+- `FIELD_TO_PAYLOADS` mapea `"tabla.campo"` → `Set<PayloadType>`, permitiendo granularidad a nivel de campo
 - Elimina la necesidad de hardcodear nombres de tabla en multiples ficheros
+
+### Dispatch de payloads (que se envia y cuando)
+La decision de que payloads enviar se toma a nivel de **campo**, no de tabla. Cada watched field en el registry declara que payload types alimenta:
+
+| Campo cambiado | Supplier | Contact | Se envia |
+|---|---|---|---|
+| `ctercero.codigo` | Si | Si | Ambos |
+| `ctercero.nombre` | Si | Si | Ambos |
+| `ctercero.cif` | Si | Si | Ambos |
+| `gproveed.fecalt` | Si | No | Solo Supplier |
+| `gproveed.fecbaj` | Si | Si | Ambos |
+| `cterdire.*` | No | Si | Solo Contact |
+
+Resumen por escenario:
+- **Cambio en ctercero** → siempre Supplier + Contact (todos sus campos afectan a ambos)
+- **Cambio en gproveed.fecalt** (fecha alta, sin cambio en fecbaj) → solo Supplier
+- **Cambio en gproveed.fecbaj** (fecha baja) → Supplier + Contact (Status cambia en ambos)
+- **Cambio en cterdire** → solo Contact (direcciones no afectan a Supplier)
 
 ### Envelope Debezium
 - Los mensajes Kafka de Debezium vienen con formato `{ schema, payload }` cuando se usa JSON sin schema registry

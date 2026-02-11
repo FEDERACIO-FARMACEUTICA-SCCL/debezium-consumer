@@ -15,7 +15,7 @@ export interface SupplierContact {
   IdSupplier: string;
   Name: string;
   NIF: string;
-  Address: string;
+  Adress: string;
   City: string;
   Country: string;
   Postal_Code: string;

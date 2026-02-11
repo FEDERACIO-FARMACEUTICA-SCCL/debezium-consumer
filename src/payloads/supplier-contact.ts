@@ -45,7 +45,7 @@ export class SupplierContactBuilder
         IdSupplier: `${codigo}-FC-UUID`,
         Name: name,
         NIF: nif,
-        Address: trimStr(dir["direcc"]),
+        Adress: trimStr(dir["direcc"]),
         City: trimStr(dir["poblac"]),
         Country: trimStr(dir["codnac"]),
         Postal_Code: trimStr(dir["codpos"]),

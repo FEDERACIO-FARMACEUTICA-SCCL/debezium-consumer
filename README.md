@@ -134,7 +134,7 @@ informix-consumer/
 
 Para añadir, por ejemplo, un payload `warehouse` alimentado por `ctercero` + `calmacen`:
 
-1. Añadir fila en `TABLE_REGISTRY` (`domain/table-registry.ts`) para `calmacen` + añadir `"warehouse"` a `feedsPayloads` de `ctercero`
+1. Añadir fila en `TABLE_REGISTRY` (`domain/table-registry.ts`) para `calmacen` + añadir `"warehouse"` al array `payloads` de los campos de `ctercero` que apliquen
 2. Añadir `"warehouse"` al tipo `PayloadType` en `types/payloads.ts`
 3. Crear `payloads/warehouse.ts` implementando `PayloadBuilder`
 4. Registrar en `index.ts`: `registry.register(new WarehouseBuilder())`
@@ -169,10 +169,11 @@ Algun campo monitorizado cambio? (domain/watched-fields.ts)
   |-- Si --> Continuar
   |
   v
-TABLE_TO_PAYLOADS: que payload types alimenta esta tabla?
+FIELD_TO_PAYLOADS: para cada campo cambiado, que payload types afecta?
+  (acumula un Set<PayloadType> con la union de todos los campos cambiados)
   |
   v
-PayloadRegistry: ejecutar builder para cada type
+PayloadRegistry: ejecutar builder para cada type resultante
   |
   v
 Payload construido?
@@ -180,21 +181,41 @@ Payload construido?
   |-- No --> Encolar en pending-buffer para reintento (max 5 retries, 60s TTL)
 ```
 
-## Campos monitorizados
+## Campos monitorizados y dispatch de payloads
 
-Solo se procesan cambios cuando estos campos especificos se modifican. Definidos en `domain/table-registry.ts`:
+Solo se procesan cambios cuando estos campos especificos se modifican. La decision de que payloads enviar se toma a **nivel de campo**, no de tabla. Cada campo en el registry declara que payload types alimenta. Definido en `domain/table-registry.ts`:
 
-| Tabla | Campos |
-|---|---|
-| `ctercero` | `codigo`, `nombre`, `cif` |
-| `gproveed` | `fecalt`, `fecbaj` |
-| `cterdire` | `direcc`, `poblac`, `codnac`, `codpos`, `telef1`, `email` |
+| Campo cambiado | Supplier | Contact | Se envia |
+|---|---|---|---|
+| `ctercero.codigo` | Si | Si | Ambos |
+| `ctercero.nombre` | Si | Si | Ambos |
+| `ctercero.cif` | Si | Si | Ambos |
+| `gproveed.fecalt` | Si | No | Solo Supplier |
+| `gproveed.fecbaj` | Si | Si | Ambos |
+| `cterdire.direcc` | No | Si | Solo Contact |
+| `cterdire.poblac` | No | Si | Solo Contact |
+| `cterdire.codnac` | No | Si | Solo Contact |
+| `cterdire.codpos` | No | Si | Solo Contact |
+| `cterdire.telef1` | No | Si | Solo Contact |
+| `cterdire.email` | No | Si | Solo Contact |
+
+### Resumen por escenario
+
+| Que cambia | Payloads enviados | Por que |
+|---|---|---|
+| Cualquier campo de **ctercero** | Supplier + Contact | nombre/cif se usan en ambos payloads |
+| Solo **gproveed.fecalt** | Solo Supplier | fecalt solo afecta a StartDate (Supplier) |
+| Solo **gproveed.fecbaj** | Supplier + Contact | fecbaj determina Status en ambos payloads |
+| **gproveed.fecalt + fecbaj** | Supplier + Contact | fecbaj arrastra Contact |
+| Cualquier campo de **cterdire** | Solo Contact | direcciones solo existen en SupplierContact |
+
+Si cambian campos de varias tablas en la misma transaccion, cada evento CDC se procesa por separado y solo dispara los payloads que le corresponden.
 
 ## Payloads
 
 ### Supplier
 
-Se construye cuando cambia `ctercero` o `gproveed`. Cruza datos de ambas tablas por `codigo`.
+Se construye cuando cambian campos que lo alimentan (`ctercero.*`, `gproveed.fecalt`, `gproveed.fecbaj`). Cruza datos de `ctercero` y `gproveed` por `codigo`.
 
 ```json
 {
@@ -222,7 +243,7 @@ Se construye cuando cambia `ctercero` o `gproveed`. Cruza datos de ambas tablas 
 
 ### SupplierContact
 
-Se construye cuando cambia `ctercero`, `gproveed` o `cterdire`. Genera una entrada por cada direccion del proveedor.
+Se construye cuando cambian campos que lo alimentan (`ctercero.*`, `gproveed.fecbaj`, `cterdire.*`). Nota: un cambio solo en `gproveed.fecalt` **no** dispara este payload. Genera una entrada por cada direccion del proveedor.
 
 ```json
 {

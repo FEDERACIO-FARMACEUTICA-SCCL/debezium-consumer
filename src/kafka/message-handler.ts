@@ -1,6 +1,7 @@
 import { AppConfig } from "../config";
 import { DebeziumEvent, OP_LABELS } from "../types/debezium";
-import { TABLE_TO_PAYLOADS } from "../domain/table-registry";
+import { FIELD_TO_PAYLOADS } from "../domain/table-registry";
+import { PayloadType } from "../types/payloads";
 import { updateStore, getStoreStats } from "../domain/store";
 import { detectChanges } from "../domain/watched-fields";
 import { PayloadRegistry } from "../payloads/payload-builder";
@@ -108,8 +109,14 @@ export function createMessageHandler(
         return;
       }
 
-      const payloadTypes = TABLE_TO_PAYLOADS.get(tableLower);
-      if (!payloadTypes) return;
+      // Compute payload types from the specific fields that changed
+      const payloadTypes = new Set<PayloadType>();
+      for (const c of changes.changedFields) {
+        const key = `${tableLower}.${c.field}`;
+        const types = FIELD_TO_PAYLOADS.get(key);
+        if (types) for (const t of types) payloadTypes.add(t);
+      }
+      if (payloadTypes.size === 0) return;
 
       for (const type of payloadTypes) {
         const builder = payloadRegistry.get(type);
