@@ -39,6 +39,8 @@ open http://localhost:3000
 # Errores API:           {container="informix-consumer"} | json | tag = `API` | level >= 50
 # Autenticaciones:       {container="informix-consumer"} | json | tag = `API` | action = `authenticate`
 # Llamadas lentas:       {container="informix-consumer"} | json | tag = `API` | durationMs > 1000
+# Debouncer flushes:     {container="informix-consumer"} | json | tag = `Debounce` | msg =~ `Flushed.*`
+# Debouncer errores:     {container="informix-consumer"} | json | tag = `Debounce` | level >= 50
 ```
 
 ## Arquitectura del codigo
@@ -46,7 +48,7 @@ open http://localhost:3000
 ```
 src/
   index.ts                      # Composition root: wiring de todos los modulos
-  config.ts                     # Configuracion (kafka + api + http)
+  config.ts                     # Configuracion (kafka + api + http + debounce)
   logger.ts                     # initLogger() + singleton mutable
 
   types/
@@ -71,6 +73,7 @@ src/
     message-handler.ts          # Orquestador eachMessage (wires domain logic)
 
   dispatch/
+    cdc-debouncer.ts            # Debounce + aggregation de CDCs antes de enviar a la API
     pending-buffer.ts           # Buffer de reintentos para codigos con datos incompletos
     dispatcher.ts               # Interface PayloadDispatcher + LogDispatcher + HttpDispatcher
     http-client.ts              # ApiClient con auth JWT + renovacion automatica
@@ -85,8 +88,8 @@ src/
 1. `kafka/consumer.ts` recibe mensajes y delega a `MessageCallback`
 2. `kafka/message-handler.ts` parsea el envelope Debezium, actualiza el store, consulta el snapshot tracker
 3. Para eventos live CDC: detecta cambios en watched fields, calcula payload types a nivel de campo via `FIELD_TO_PAYLOADS`
-4. `payloads/supplier.ts` y `payloads/supplier-contact.ts` construyen payloads desde el store
-5. `dispatch/dispatcher.ts` envia el payload via `HttpDispatcher` → `ApiClient` → API externa
+4. `dispatch/cdc-debouncer.ts` acumula `codigo → Set<PayloadType>` en una ventana de tiempo (default 1s)
+5. Al hacer flush: construye payloads desde el store (que ya tiene el estado final), agrupa items por tipo y envia en batches
 6. Si un builder retorna null, el codigo va al `pending-buffer` para reintentos
 
 ### Como añadir un nuevo payload type
@@ -143,6 +146,31 @@ Resumen por escenario:
 - **Cambio en gproveed.fecbaj** (fecha baja) → Supplier + Contact (Status cambia en ambos)
 - **Cambio en cterdire** → solo Contact (direcciones no afectan a Supplier)
 
+### CDC Debouncer (`dispatch/cdc-debouncer.ts`)
+
+Capa de agregacion entre el message-handler y el dispatcher. Resuelve el problema de que al re-arrancar el consumer, miles de CDCs historicos se procesan como "live" generando un PUT HTTP por cada evento.
+
+- **`enqueue(codigo, types)`**: merge `types` en `buffer.get(codigo)` (o crea nueva entrada). Si `buffer.size >= maxBufferSize` → flush inmediato. Si no hay timer activo → inicia `setTimeout(flush, windowMs)`.
+- **`flush()`**: snapshot + clear del buffer. Para cada `(codigo, types)`: `builder.build(codigo)` → acumula en `Map<PayloadType, AnyPayload[]>`. Luego despacha un PUT por tipo (particionado en batches de `batchSize`). Si un build retorna null → `addPending()`.
+- **`stop()`**: cancela timer + flush final (llamado en shutdown antes de `server.close()`).
+- **Anti-overlap**: flag `flushing` impide flushes concurrentes.
+- **Seguridad**: el store ya tiene el estado final cuando se hace flush (se actualiza con cada evento ANTES de encolar).
+
+Env vars:
+- `DEBOUNCE_WINDOW_MS` → default `1000` (1 segundo)
+- `DEBOUNCE_MAX_BUFFER_SIZE` → default `500` (flush anticipado si se acumulan tantos codigos)
+
+Ejemplo numerico: 1.000 CDCs en 3s → deduplica a ~800 codigos → 2 flushes → **4 PUTs** (2 por tipo) en vez de 1.000+.
+
+Tag de logging: `"Debounce"`. Queries utiles en Grafana:
+```
+# Flushes del debouncer
+{container="informix-consumer"} | json | tag = `Debounce` | msg =~ `Flushed.*`
+
+# Errores de batch dispatch
+{container="informix-consumer"} | json | tag = `Debounce` | level >= 50
+```
+
 ### Pending buffer (reintentos)
 - Guarda codigos con datos incompletos para reintentar cada 2s (max 5 reintentos o 60s TTL)
 - Guarda anti-overlap: flag `retrying` impide que un nuevo ciclo de `setInterval` se solape con uno que aun no ha terminado (dispatch es async)
@@ -150,7 +178,8 @@ Resumen por escenario:
 - Los dispatch se hacen con `await` + try/catch; un fallo en un tipo no bloquea los demas
 
 ### Shutdown graceful
-- `Promise.race` entre el shutdown graceful (stopRetryLoop + server.close + consumer.disconnect) y un timeout de 10s
+- `Promise.race` entre el shutdown graceful (stopRetryLoop + debouncer.stop + server.close + consumer.disconnect) y un timeout de 10s
+- `debouncer.stop()` hace un flush final para no perder eventos encolados
 - Si el timeout gana, se loguea el error y se sale con `exitCode = 1`
 - Evita que un `consumer.disconnect()` bloqueado impida el cierre del proceso
 
@@ -179,7 +208,7 @@ Resumen por escenario:
 
 ### Logging (pino)
 - Todos los logs salen como JSON estructurado via `pino`. No queda ningun `console.log` en el codigo.
-- Cada log lleva un campo `tag` que permite filtrar en Grafana: `CDC`, `StoreRebuild`, `Watch`, `Supplier`, `SupplierContact`, `PendingBuffer`, `Consumer`, `Dispatcher`.
+- Cada log lleva un campo `tag` que permite filtrar en Grafana: `CDC`, `StoreRebuild`, `Watch`, `Supplier`, `SupplierContact`, `PendingBuffer`, `Debounce`, `Consumer`, `Dispatcher`.
 - `LOG_LEVEL=info` (default): metadatos solamente (tabla, operacion, campos cambiados, codigo). No se loguean valores PII.
 - `LOG_LEVEL=debug`: incluye payloads completos (Supplier/SupplierContact bodies), valores before/after de campos, y mensajes non-CDC. Solo usar en desarrollo.
 
@@ -187,7 +216,7 @@ Resumen por escenario:
 Los topics siguen el patron `{prefix}.{schema}.{table}` donde prefix=`informix` (configurado en Debezium como `topic.prefix`). No incluyen el nombre de la base de datos en el path. Los topics default se derivan automaticamente de `ALL_TOPICS` en el table registry.
 
 ### Trigger API (Fastify + Swagger)
-- Servidor Fastify en puerto 3001 con 4 endpoints de trigger bulk + health check
+- Servidor Fastify en puerto 3001 con 2 recursos (`/triggers/suppliers`, `/triggers/contacts`) x 2 metodos (POST=sync, DELETE=delete) + health check
 - `@fastify/swagger` genera spec OpenAPI 3.0.3; `@fastify/swagger-ui` sirve documentacion interactiva en `/docs`
 - Auth: Bearer token (`TRIGGER_API_KEY`) verificado en hook `onRequest`; se salta `/health` y `/docs*`
 - Auth: comparacion timing-safe con `crypto.timingSafeEqual` (previene timing attacks)
@@ -195,7 +224,7 @@ Los topics siguen el patron `{prefix}.{schema}.{table}` donde prefix=`informix` 
 - `TriggerBody.CodSupplier` tiene limites: `maxItems: 10_000` y `maxLength: 50` por item (Fastify valida automaticamente)
 - `persistAuthorization: true` guarda el token en localStorage entre recargas del Swagger UI
 - Orden de registro critico: swagger → swagger-ui → auth hook → rutas
-- Los 4 endpoints de trigger aceptan un body JSON opcional `{ "CodSupplier": ["P001", "P002"] }` para filtrar por codigos. Sin body se procesan todos.
+- Los endpoints de trigger aceptan un body JSON opcional `{ "CodSupplier": ["P001", "P002"] }` para filtrar por codigos. Sin body se procesan todos.
 - La respuesta incluye `skippedDetails: { CodSupplier, reason }[]` con el motivo concreto de cada skip
 
 #### skippedDetails — motivos de skip por metodo
@@ -233,16 +262,16 @@ Ejemplo de respuesta con skips:
 }
 ```
 
-| URL | Auth | Body opcional | Proposito |
-|---|---|---|---|
-| `/docs` | No | — | Swagger UI interactivo |
-| `/docs/json` | No | — | OpenAPI spec JSON |
-| `/docs/yaml` | No | — | OpenAPI spec YAML |
-| `/health` | No | — | Health check |
-| `/triggers/sync/suppliers` | Bearer | `{ CodSupplier?: string[] }` | Sync bulk de suppliers |
-| `/triggers/sync/contacts` | Bearer | `{ CodSupplier?: string[] }` | Sync bulk de contacts |
-| `/triggers/delete/suppliers` | Bearer | `{ CodSupplier?: string[] }` | Delete bulk de suppliers |
-| `/triggers/delete/contacts` | Bearer | `{ CodSupplier?: string[] }` | Delete bulk de contacts |
+| URL | Metodo | Auth | Body opcional | Proposito |
+|---|---|---|---|---|
+| `/docs` | GET | No | — | Swagger UI interactivo |
+| `/docs/json` | GET | No | — | OpenAPI spec JSON |
+| `/docs/yaml` | GET | No | — | OpenAPI spec YAML |
+| `/health` | GET | No | — | Health check |
+| `/triggers/suppliers` | POST | Bearer | `{ CodSupplier?: string[] }` | Sync bulk de suppliers |
+| `/triggers/suppliers` | DELETE | Bearer | `{ CodSupplier?: string[] }` | Delete bulk de suppliers |
+| `/triggers/contacts` | POST | Bearer | `{ CodSupplier?: string[] }` | Sync bulk de contacts |
+| `/triggers/contacts` | DELETE | Bearer | `{ CodSupplier?: string[] }` | Delete bulk de contacts |
 
 ### Monitoring (Grafana + Loki + Promtail)
 

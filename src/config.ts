@@ -20,6 +20,10 @@ export interface AppConfig {
   bulk: {
     batchSize: number;
   };
+  debounce: {
+    windowMs: number;
+    maxBufferSize: number;
+  };
   logLevel: "info" | "debug";
 }
 
@@ -65,6 +69,10 @@ export function loadConfig(): AppConfig {
     },
     bulk: {
       batchSize: Number(process.env.BULK_BATCH_SIZE ?? 500),
+    },
+    debounce: {
+      windowMs: Number(process.env.DEBOUNCE_WINDOW_MS ?? 1000),
+      maxBufferSize: Number(process.env.DEBOUNCE_MAX_BUFFER_SIZE ?? 500),
     },
     logLevel: logLevel === "debug" ? "debug" : "info",
   };

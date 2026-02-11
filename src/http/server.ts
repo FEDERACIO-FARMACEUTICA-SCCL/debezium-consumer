@@ -79,22 +79,22 @@ export async function startServer(opts: ServerOptions): Promise<FastifyInstance>
   });
 
   // Trigger routes
-  app.post("/triggers/sync/suppliers", { schema: syncSuppliersSchema }, async (request, reply) => {
+  app.post("/triggers/suppliers", { schema: syncSuppliersSchema }, async (request, reply) => {
     const { CodSupplier } = (request.body as TriggerBody) ?? {};
     return handleBulk(reply, () => opts.bulkService.syncSuppliers(CodSupplier));
   });
 
-  app.post("/triggers/sync/contacts", { schema: syncContactsSchema }, async (request, reply) => {
-    const { CodSupplier } = (request.body as TriggerBody) ?? {};
-    return handleBulk(reply, () => opts.bulkService.syncContacts(CodSupplier));
-  });
-
-  app.post("/triggers/delete/suppliers", { schema: deleteSuppliersSchema }, async (request, reply) => {
+  app.delete("/triggers/suppliers", { schema: deleteSuppliersSchema }, async (request, reply) => {
     const { CodSupplier } = (request.body as TriggerBody) ?? {};
     return handleBulk(reply, () => opts.bulkService.deleteSuppliers(CodSupplier));
   });
 
-  app.post("/triggers/delete/contacts", { schema: deleteContactsSchema }, async (request, reply) => {
+  app.post("/triggers/contacts", { schema: syncContactsSchema }, async (request, reply) => {
+    const { CodSupplier } = (request.body as TriggerBody) ?? {};
+    return handleBulk(reply, () => opts.bulkService.syncContacts(CodSupplier));
+  });
+
+  app.delete("/triggers/contacts", { schema: deleteContactsSchema }, async (request, reply) => {
     const { CodSupplier } = (request.body as TriggerBody) ?? {};
     return handleBulk(reply, () => opts.bulkService.deleteContacts(CodSupplier));
   });

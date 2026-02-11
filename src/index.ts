@@ -8,6 +8,7 @@ import { createMessageHandler } from "./kafka/message-handler";
 import { createKafkaConsumer } from "./kafka/consumer";
 import { HttpDispatcher } from "./dispatch/dispatcher";
 import { ApiClient } from "./dispatch/http-client";
+import { CdcDebouncer } from "./dispatch/cdc-debouncer";
 import { startRetryLoop, stopRetryLoop } from "./dispatch/pending-buffer";
 import { BulkService } from "./bulk/bulk-service";
 import { startServer } from "./http/server";
@@ -42,24 +43,33 @@ async function main() {
     });
   }
 
-  // 5. Snapshot tracker
+  // 5. CDC debouncer
+  const debouncer = new CdcDebouncer(
+    registry,
+    dispatcher,
+    config.debounce.windowMs,
+    config.debounce.maxBufferSize,
+    config.bulk.batchSize
+  );
+
+  // 6. Snapshot tracker
   const snapshotTracker = new SnapshotTracker(config.kafka.topics);
 
-  // 6. Message handler
+  // 7. Message handler
   const messageHandler = createMessageHandler(
     config,
     registry,
     snapshotTracker,
-    dispatcher
+    debouncer
   );
 
-  // 7. Kafka consumer
+  // 8. Kafka consumer
   const consumer = await createKafkaConsumer(config, messageHandler);
 
-  // 8. Retry loop for incomplete payloads
+  // 9. Retry loop for incomplete payloads
   startRetryLoop(registry, dispatcher);
 
-  // 9. Graceful shutdown
+  // 10. Graceful shutdown
   const SHUTDOWN_TIMEOUT_MS = 10_000;
   const shutdown = async (signal: string) => {
     logger.info({ signal }, "Received shutdown signal");
@@ -67,6 +77,7 @@ async function main() {
     try {
       const graceful = async () => {
         stopRetryLoop();
+        await debouncer.stop();
         if (server) await server.close();
         await consumer.disconnect();
         logger.info("Consumer disconnected");

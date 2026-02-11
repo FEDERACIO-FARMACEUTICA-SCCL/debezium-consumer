@@ -5,9 +5,8 @@ import { PayloadType } from "../types/payloads";
 import { updateStore, getStoreStats } from "../domain/store";
 import { detectChanges } from "../domain/watched-fields";
 import { PayloadRegistry } from "../payloads/payload-builder";
-import { PayloadDispatcher } from "../dispatch/dispatcher";
 import { SnapshotTracker } from "./snapshot-tracker";
-import { addPending } from "../dispatch/pending-buffer";
+import { CdcDebouncer } from "../dispatch/cdc-debouncer";
 import { logger } from "../logger";
 import { MessageCallback } from "./consumer";
 
@@ -15,7 +14,7 @@ export function createMessageHandler(
   config: AppConfig,
   payloadRegistry: PayloadRegistry,
   snapshotTracker: SnapshotTracker,
-  dispatcher: PayloadDispatcher
+  debouncer: CdcDebouncer
 ): MessageCallback {
   return async ({ topic, partition, message }) => {
     if (!message.value) return;
@@ -118,21 +117,7 @@ export function createMessageHandler(
       }
       if (payloadTypes.size === 0) return;
 
-      for (const type of payloadTypes) {
-        const builder = payloadRegistry.get(type);
-        if (!builder) continue;
-
-        const built = builder.build(codigo);
-        if (built) {
-          const tagMap = { supplier: "Supplier", contact: "SupplierContact" };
-          const tag = tagMap[type] ?? type;
-          logger.info({ tag, codigo }, "Payload built");
-          logger.debug({ tag, codigo, payload: built }, `${tag} payload details`);
-          await dispatcher.dispatch(type, codigo, built);
-        } else {
-          addPending(codigo, type);
-        }
-      }
+      debouncer.enqueue(codigo, payloadTypes);
     } catch (err) {
       logger.error({ tag: "Consumer", topic, err }, "Error processing message");
     }

@@ -9,7 +9,7 @@ Informix DB
     |
     | (Change Data Capture)
     v
-Debezium Server  -->  Kafka  -->  [este consumer]  -->  Ingest API (PUT/DELETE)
+Debezium Server  -->  Kafka  -->  [este consumer]  --debounce-->  Ingest API (PUT/DELETE)
                                         |
                                    Trigger API (:3001)  -->  Swagger UI (/docs)
                                         |
@@ -59,8 +59,9 @@ Una vez cargado el historico, el consumer queda escuchando cambios en vivo. Cuan
 
 1. **Actualiza el store** con los nuevos datos
 2. **Detecta si algun campo monitorizado cambio** (ej: `nombre`, `cif`, `fecalt`...)
-3. Si hay cambios relevantes, **construye el payload Supplier** cruzando datos de `ctercero` y `gproveed` usando el campo `codigo` como clave comun
-4. Envia el payload a la API REST via `HttpDispatcher` → `ApiClient`
+3. Si hay cambios relevantes, **encola el codigo en el debouncer** con los tipos de payload afectados
+4. Tras la ventana de debounce (1s por defecto), **construye los payloads** cruzando datos de `ctercero` y `gproveed` usando el campo `codigo` como clave comun
+5. Envia los payloads agrupados por tipo en batches a la API REST via `HttpDispatcher` → `ApiClient`
 
 ### Por que no necesita conectarse a Informix?
 
@@ -91,7 +92,7 @@ informix-consumer/
 │           └── informix-consumer.json  # Dashboard pre-construido (5 paneles)
 └── src/
     ├── index.ts                     # Composition root: wiring de todos los modulos
-    ├── config.ts                    # Variables de entorno con defaults (kafka + api + http)
+    ├── config.ts                    # Variables de entorno con defaults (kafka + api + http + debounce)
     ├── logger.ts                    # initLogger() + singleton mutable pino
     │
     ├── types/
@@ -116,6 +117,7 @@ informix-consumer/
     │   └── message-handler.ts       # Orquestador eachMessage
     │
     ├── dispatch/
+    │   ├── cdc-debouncer.ts         # Debounce + aggregation de CDCs antes de enviar a la API
     │   ├── pending-buffer.ts        # Reintentos para payloads con datos incompletos
     │   ├── dispatcher.ts            # Interface PayloadDispatcher + HttpDispatcher + LogDispatcher
     │   └── http-client.ts           # ApiClient: JWT auth + renovacion automatica + HTTP calls
@@ -133,7 +135,7 @@ informix-consumer/
 | **Domain** | `domain/` | Table registry (fuente unica de verdad), store en memoria, deteccion de cambios |
 | **Payloads** | `payloads/` | Builders de payloads (patron Strategy via `PayloadBuilder` interface) + helpers compartidos (`payload-utils.ts`) |
 | **Kafka** | `kafka/` | Infraestructura Kafka pura, snapshot state machine, orquestacion de mensajes |
-| **Dispatch** | `dispatch/` | Envio de payloads via HTTP (`HttpDispatcher` + `ApiClient`), buffer de reintentos |
+| **Dispatch** | `dispatch/` | CDC debounce + aggregation, envio via HTTP (`HttpDispatcher` + `ApiClient`), buffer de reintentos |
 | **HTTP** | `http/` | Trigger API (Fastify): bulk sync/delete endpoints, Swagger UI, health check |
 
 ### Como añadir un nuevo payload type
@@ -179,12 +181,21 @@ FIELD_TO_PAYLOADS: para cada campo cambiado, que payload types afecta?
   (acumula un Set<PayloadType> con la union de todos los campos cambiados)
   |
   v
-PayloadRegistry: ejecutar builder para cada type resultante
+CdcDebouncer.enqueue(codigo, payloadTypes)
   |
   v
-Payload construido?
-  |-- Si --> HttpDispatcher.dispatch() --> ApiClient.request() --> API externa
-  |-- No --> Encolar en pending-buffer para reintento (max 5 retries, 60s TTL)
+... mas CDCs llegan, se acumulan en Map<codigo, Set<PayloadType>> ...
+  |
+  v
+flush() (por timer o por tamaño de buffer)
+  |
+  v
+Para cada (codigo, types): builder.build(codigo) desde el store (estado final)
+  |
+  v
+Agrupar items por tipo (supplier[], contact[])
+  |-- Batch dispatch: un PUT por tipo/batch --> ApiClient.request() --> API externa
+  |-- Build null --> Encolar en pending-buffer para reintento (max 5 retries, 60s TTL)
 ```
 
 ## Campos monitorizados y dispatch de payloads
@@ -289,6 +300,29 @@ Si al construir un payload faltan datos (ej: llega un evento de `cterdire` pero 
 - Anti-overlap: un flag `retrying` impide que un nuevo ciclo de `setInterval` arranque mientras el anterior sigue ejecutando dispatches async
 - Los dispatch se hacen con `await` + try/catch; un fallo en un tipo no bloquea los demas
 
+## CDC Debouncer (agregacion antes del dispatch)
+
+Cuando el consumer re-arranca, lee todo el historico de Kafka desde offset 0. Tras el snapshot, los CDCs pendientes se procesan como "live" — sin debounce, esto generaria un PUT HTTP por cada evento individual.
+
+El `CdcDebouncer` (`dispatch/cdc-debouncer.ts`) resuelve esto acumulando eventos en una ventana de tiempo antes de enviarlos:
+
+1. **Enqueue**: cada CDC live encola `codigo → Set<PayloadType>` en un buffer en memoria
+2. **Merge**: si el mismo codigo recibe multiples CDCs, los tipos se unen (no se duplican)
+3. **Flush**: al expirar el timer (`DEBOUNCE_WINDOW_MS`, default 1s) o al alcanzar el tamaño maximo (`DEBOUNCE_MAX_BUFFER_SIZE`, default 500 codigos):
+   - Construye payloads desde el store (que ya tiene el estado final de cada registro)
+   - Agrupa items por tipo (`supplier[]`, `contact[]`)
+   - Envia un PUT por tipo/batch (particionado en lotes de `BULK_BATCH_SIZE`)
+4. **Null builds**: si un builder retorna null, el codigo va al pending-buffer como antes
+
+### Ejemplo numerico
+
+| Escenario | Sin debounce | Con debounce (window=1s) |
+|---|---|---|
+| 1.000 CDCs en 3s | 1.000+ PUTs individuales | ~4 PUTs (2 flushes x 2 tipos) |
+| 1 CDC aislado | 1 PUT inmediato | 1 PUT tras 1s de delay |
+
+El delay maximo para un evento individual es `DEBOUNCE_WINDOW_MS` (1s por defecto). En escenarios de carga masiva, el ahorro es de ordenes de magnitud.
+
 ## Trigger API (bulk sync/delete)
 
 Servidor Fastify en puerto 3001 que permite lanzar operaciones bulk de sincronizacion y borrado contra la Ingest API. Protegido con Bearer token (`TRIGGER_API_KEY`).
@@ -298,16 +332,16 @@ Servidor Fastify en puerto 3001 que permite lanzar operaciones bulk de sincroniz
 | Metodo | Ruta | Descripcion |
 |---|---|---|
 | `GET` | `/health` | Health check (sin auth) |
-| `POST` | `/triggers/sync/suppliers` | Sync bulk de suppliers |
-| `POST` | `/triggers/sync/contacts` | Sync bulk de contacts |
-| `POST` | `/triggers/delete/suppliers` | Delete bulk de suppliers |
-| `POST` | `/triggers/delete/contacts` | Delete bulk de contacts |
+| `POST` | `/triggers/suppliers` | Sync bulk de suppliers |
+| `DELETE` | `/triggers/suppliers` | Delete bulk de suppliers |
+| `POST` | `/triggers/contacts` | Sync bulk de contacts |
+| `DELETE` | `/triggers/contacts` | Delete bulk de contacts |
 
 Todas las rutas `/triggers/*` requieren header `Authorization: Bearer <TRIGGER_API_KEY>`. Si ya hay una operacion bulk en curso, devuelve `409 Conflict`.
 
 ### Filtro por codigos (body opcional)
 
-Los 4 endpoints de trigger aceptan un body JSON opcional para limitar la operacion a un subconjunto de codigos de proveedor:
+Los endpoints de trigger aceptan un body JSON opcional para limitar la operacion a un subconjunto de codigos de proveedor:
 
 ```json
 {
@@ -328,17 +362,17 @@ El campo se llama `CodSupplier` para ser consistente con el nombre usado en los 
 
 ```bash
 # Sync todos los suppliers (comportamiento por defecto)
-curl -X POST http://localhost:3001/triggers/sync/suppliers \
+curl -X POST http://localhost:3001/triggers/suppliers \
   -H "Authorization: Bearer <TRIGGER_API_KEY>"
 
 # Sync solo codigos especificos
-curl -X POST http://localhost:3001/triggers/sync/suppliers \
+curl -X POST http://localhost:3001/triggers/suppliers \
   -H "Authorization: Bearer <TRIGGER_API_KEY>" \
   -H "Content-Type: application/json" \
   -d '{"CodSupplier": ["P001", "P002"]}'
 
 # Delete solo un supplier concreto
-curl -X POST http://localhost:3001/triggers/delete/suppliers \
+curl -X DELETE http://localhost:3001/triggers/suppliers \
   -H "Authorization: Bearer <TRIGGER_API_KEY>" \
   -H "Content-Type: application/json" \
   -d '{"CodSupplier": ["P001"]}'
@@ -464,6 +498,12 @@ Queries utiles en Grafana Explore:
 
 # Llamadas API lentas (>1s)
 {container="informix-consumer"} | json | tag = `API` | durationMs > 1000
+
+# Debouncer: flushes
+{container="informix-consumer"} | json | tag = `Debounce` | msg =~ `Flushed.*`
+
+# Debouncer: errores de batch dispatch
+{container="informix-consumer"} | json | tag = `Debounce` | level >= 50
 ```
 
 ### Produccion
@@ -485,6 +525,9 @@ Usar el Dockerfile directamente con `CMD ["node", "dist/index.js"]` (sin el over
 | `HTTP_PORT` | `3001` | Puerto del servidor Trigger API |
 | `HTTP_ENABLED` | `false` | Habilitar servidor Trigger API |
 | `TRIGGER_API_KEY` | **(requerido si HTTP_ENABLED)** | Bearer token para autenticar llamadas a la Trigger API |
+| `DEBOUNCE_WINDOW_MS` | `1000` | Ventana de debounce en ms (tiempo que se acumulan CDCs antes de flush) |
+| `DEBOUNCE_MAX_BUFFER_SIZE` | `500` | Numero maximo de codigos en el buffer antes de flush anticipado |
+| `BULK_BATCH_SIZE` | `500` | Tamaño maximo de items por PUT (usado por debouncer y Trigger API) |
 
 **Nota sobre LOG_LEVEL**: Con `info` solo se loguean metadatos (tabla, operacion, campos cambiados, codigo). Con `debug` se incluyen payloads completos y valores PII (nombres, NIFs, direcciones). Usar `debug` solo en desarrollo. Cambiar `LOG_LEVEL` requiere recrear el container (`docker compose up -d consumer`).
 
@@ -536,7 +579,7 @@ Nota: los campos `CHAR` de Informix vienen con espacios al final (padding). El c
 - **HTTP timeout**: Todas las llamadas al Ingest API usan `AbortSignal.timeout(30_000)` — sin posibilidad de hang indefinido
 - **Token refresh dedup**: Si varias llamadas concurrentes detectan token expirado, `authPromise` garantiza una sola peticion de autenticacion
 - **Error body a debug**: Los bodies de error de la API se loguean solo a nivel `debug`, evitando leaks de informacion sensible en produccion
-- **Shutdown con timeout**: `Promise.race` entre shutdown graceful y un timeout de 10s — si `consumer.disconnect()` se bloquea, el proceso sale igualmente
+- **Shutdown con timeout**: `Promise.race` entre shutdown graceful (stopRetryLoop + debouncer.stop + server.close + consumer.disconnect) y un timeout de 10s — `debouncer.stop()` hace flush final para no perder eventos encolados
 - **Schema validation**: `CodSupplier` en el body de los triggers tiene `maxItems: 10_000` y `maxLength: 50` por item (Fastify valida automaticamente)
 - **Docker resource limits**: Todos los servicios tienen limites de memoria y CPU para evitar que un servicio desbocado consuma todos los recursos del host
 - **Dockerfile produccion**: `npm ci --omit=dev` (sin devDependencies), `USER node` (no root)
