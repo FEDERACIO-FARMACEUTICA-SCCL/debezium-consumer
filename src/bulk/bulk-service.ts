@@ -18,25 +18,25 @@ export class BulkService {
     private batchSize: number
   ) {}
 
-  async syncSuppliers(): Promise<BulkResult> {
-    return this.withMutex(() => this.doSyncSuppliers());
+  async syncSuppliers(codigos?: string[]): Promise<BulkResult> {
+    return this.withMutex(() => this.doSyncSuppliers(codigos));
   }
 
-  async syncContacts(): Promise<BulkResult> {
-    return this.withMutex(() => this.doSyncContacts());
+  async syncContacts(codigos?: string[]): Promise<BulkResult> {
+    return this.withMutex(() => this.doSyncContacts(codigos));
   }
 
-  async deleteSuppliers(): Promise<BulkResult> {
-    return this.withMutex(() => this.doDeleteSuppliers());
+  async deleteSuppliers(codigos?: string[]): Promise<BulkResult> {
+    return this.withMutex(() => this.doDeleteSuppliers(codigos));
   }
 
-  async deleteContacts(): Promise<BulkResult> {
-    return this.withMutex(() => this.doDeleteContacts());
+  async deleteContacts(codigos?: string[]): Promise<BulkResult> {
+    return this.withMutex(() => this.doDeleteContacts(codigos));
   }
 
-  private async doSyncSuppliers(): Promise<BulkResult> {
+  private async doSyncSuppliers(filterCodigos?: string[]): Promise<BulkResult> {
     const start = Date.now();
-    const codigos = store.getAllCodigos("ctercero");
+    const codigos = filterCodigos ?? store.getAllCodigos("ctercero");
     const builder = this.registry.get("supplier");
 
     const items: Supplier[] = [];
@@ -67,9 +67,9 @@ export class BulkService {
     };
   }
 
-  private async doSyncContacts(): Promise<BulkResult> {
+  private async doSyncContacts(filterCodigos?: string[]): Promise<BulkResult> {
     const start = Date.now();
-    const codigos = store.getAllCodigos("ctercero");
+    const codigos = filterCodigos ?? store.getAllCodigos("ctercero");
     const builder = this.registry.get("contact");
 
     const items: SupplierContact[] = [];
@@ -100,9 +100,9 @@ export class BulkService {
     };
   }
 
-  private async doDeleteSuppliers(): Promise<BulkResult> {
+  private async doDeleteSuppliers(filterCodigos?: string[]): Promise<BulkResult> {
     const start = Date.now();
-    const codigos = store.getAllCodigos("ctercero");
+    const codigos = filterCodigos ?? store.getAllCodigos("ctercero");
     const now = new Date().toISOString();
 
     const items: SupplierDeletion[] = codigos.map((codigo) => ({
@@ -126,9 +126,9 @@ export class BulkService {
     };
   }
 
-  private async doDeleteContacts(): Promise<BulkResult> {
+  private async doDeleteContacts(filterCodigos?: string[]): Promise<BulkResult> {
     const start = Date.now();
-    const codigos = store.getAllCodigos("ctercero");
+    const codigos = filterCodigos ?? store.getAllCodigos("ctercero");
     const now = new Date().toISOString();
     let skipped = 0;
 

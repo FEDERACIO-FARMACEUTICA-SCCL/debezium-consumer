@@ -11,6 +11,10 @@ import {
   deleteContactsSchema,
 } from "./schemas";
 
+interface TriggerBody {
+  CodSupplier?: string[];
+}
+
 export interface ServerOptions {
   port: number;
   apiKey: string;
@@ -68,20 +72,24 @@ export async function startServer(opts: ServerOptions): Promise<FastifyInstance>
   });
 
   // Trigger routes
-  app.post("/triggers/sync/suppliers", { schema: syncSuppliersSchema }, async (_request, reply) => {
-    return handleBulk(reply, () => opts.bulkService.syncSuppliers());
+  app.post("/triggers/sync/suppliers", { schema: syncSuppliersSchema }, async (request, reply) => {
+    const { CodSupplier } = (request.body as TriggerBody) ?? {};
+    return handleBulk(reply, () => opts.bulkService.syncSuppliers(CodSupplier));
   });
 
-  app.post("/triggers/sync/contacts", { schema: syncContactsSchema }, async (_request, reply) => {
-    return handleBulk(reply, () => opts.bulkService.syncContacts());
+  app.post("/triggers/sync/contacts", { schema: syncContactsSchema }, async (request, reply) => {
+    const { CodSupplier } = (request.body as TriggerBody) ?? {};
+    return handleBulk(reply, () => opts.bulkService.syncContacts(CodSupplier));
   });
 
-  app.post("/triggers/delete/suppliers", { schema: deleteSuppliersSchema }, async (_request, reply) => {
-    return handleBulk(reply, () => opts.bulkService.deleteSuppliers());
+  app.post("/triggers/delete/suppliers", { schema: deleteSuppliersSchema }, async (request, reply) => {
+    const { CodSupplier } = (request.body as TriggerBody) ?? {};
+    return handleBulk(reply, () => opts.bulkService.deleteSuppliers(CodSupplier));
   });
 
-  app.post("/triggers/delete/contacts", { schema: deleteContactsSchema }, async (_request, reply) => {
-    return handleBulk(reply, () => opts.bulkService.deleteContacts());
+  app.post("/triggers/delete/contacts", { schema: deleteContactsSchema }, async (request, reply) => {
+    const { CodSupplier } = (request.body as TriggerBody) ?? {};
+    return handleBulk(reply, () => opts.bulkService.deleteContacts(CodSupplier));
   });
 
   await app.listen({ port: opts.port, host: "0.0.0.0" });

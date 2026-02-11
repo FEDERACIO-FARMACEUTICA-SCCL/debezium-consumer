@@ -29,6 +29,18 @@ const triggerResponses = {
   500: { description: "Internal server error", ...ErrorResponse },
 } as const;
 
+const TriggerBody = {
+  type: "object",
+  properties: {
+    CodSupplier: {
+      type: "array",
+      items: { type: "string" },
+      description:
+        "Optional list of supplier codes to process. If omitted, all codes are processed.",
+    },
+  },
+} as const;
+
 // Per-route schemas
 
 export const healthSchema = {
@@ -52,6 +64,7 @@ export const syncSuppliersSchema = {
   description:
     "Reads all suppliers from the in-memory store, builds payloads and sends them to the ingest API in batches.",
   security: [{ bearerAuth: [] }],
+  body: TriggerBody,
   response: triggerResponses,
 };
 
@@ -61,6 +74,7 @@ export const syncContactsSchema = {
   description:
     "Reads all supplier contacts from the in-memory store, builds payloads and sends them to the ingest API in batches.",
   security: [{ bearerAuth: [] }],
+  body: TriggerBody,
   response: triggerResponses,
 };
 
@@ -70,6 +84,7 @@ export const deleteSuppliersSchema = {
   description:
     "Sends a deletion payload for every supplier in the store to the ingest API.",
   security: [{ bearerAuth: [] }],
+  body: TriggerBody,
   response: triggerResponses,
 };
 
@@ -79,5 +94,6 @@ export const deleteContactsSchema = {
   description:
     "Sends a deletion payload for every supplier contact in the store to the ingest API.",
   security: [{ bearerAuth: [] }],
+  body: TriggerBody,
   response: triggerResponses,
 };

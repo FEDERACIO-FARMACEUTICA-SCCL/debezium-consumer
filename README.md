@@ -295,12 +295,51 @@ Servidor Fastify en puerto 3001 que permite lanzar operaciones bulk de sincroniz
 | Metodo | Ruta | Descripcion |
 |---|---|---|
 | `GET` | `/health` | Health check (sin auth) |
-| `POST` | `/triggers/sync/suppliers` | Sync bulk de todos los suppliers del store |
-| `POST` | `/triggers/sync/contacts` | Sync bulk de todos los contacts del store |
-| `POST` | `/triggers/delete/suppliers` | Delete bulk de todos los suppliers |
-| `POST` | `/triggers/delete/contacts` | Delete bulk de todos los contacts |
+| `POST` | `/triggers/sync/suppliers` | Sync bulk de suppliers |
+| `POST` | `/triggers/sync/contacts` | Sync bulk de contacts |
+| `POST` | `/triggers/delete/suppliers` | Delete bulk de suppliers |
+| `POST` | `/triggers/delete/contacts` | Delete bulk de contacts |
 
 Todas las rutas `/triggers/*` requieren header `Authorization: Bearer <TRIGGER_API_KEY>`. Si ya hay una operacion bulk en curso, devuelve `409 Conflict`.
+
+### Filtro por codigos (body opcional)
+
+Los 4 endpoints de trigger aceptan un body JSON opcional para limitar la operacion a un subconjunto de codigos de proveedor:
+
+```json
+{
+  "CodSupplier": ["P001", "P002"]
+}
+```
+
+| Escenario | Comportamiento |
+|---|---|
+| Sin body | Procesa todos los codigos del store |
+| Body vacio `{}` | Procesa todos los codigos del store |
+| `{ "CodSupplier": [] }` | 0 items procesados |
+| `{ "CodSupplier": ["P001"] }` | Solo procesa P001 |
+
+El campo se llama `CodSupplier` para ser consistente con el nombre usado en los payloads Supplier y SupplierContact.
+
+**Ejemplos con curl:**
+
+```bash
+# Sync todos los suppliers (comportamiento por defecto)
+curl -X POST http://localhost:3001/triggers/sync/suppliers \
+  -H "Authorization: Bearer <TRIGGER_API_KEY>"
+
+# Sync solo codigos especificos
+curl -X POST http://localhost:3001/triggers/sync/suppliers \
+  -H "Authorization: Bearer <TRIGGER_API_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{"CodSupplier": ["P001", "P002"]}'
+
+# Delete solo un supplier concreto
+curl -X POST http://localhost:3001/triggers/delete/suppliers \
+  -H "Authorization: Bearer <TRIGGER_API_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{"CodSupplier": ["P001"]}'
+```
 
 ### Respuesta (BulkResult)
 

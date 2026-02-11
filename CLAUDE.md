@@ -167,20 +167,21 @@ Los topics siguen el patron `{prefix}.{schema}.{table}` donde prefix=`informix` 
 - Servidor Fastify en puerto 3001 con 4 endpoints de trigger bulk + health check
 - `@fastify/swagger` genera spec OpenAPI 3.0.3; `@fastify/swagger-ui` sirve documentacion interactiva en `/docs`
 - Auth: Bearer token (`TRIGGER_API_KEY`) verificado en hook `onRequest`; se salta `/health` y `/docs*`
-- Schemas de rutas en `http/schemas.ts`: schemas compartidos (`BulkResultResponse`, `ErrorResponse`, `triggerResponses`) + schemas individuales por ruta
+- Schemas de rutas en `http/schemas.ts`: schemas compartidos (`BulkResultResponse`, `ErrorResponse`, `triggerResponses`, `TriggerBody`) + schemas individuales por ruta
 - `persistAuthorization: true` guarda el token en localStorage entre recargas del Swagger UI
 - Orden de registro critico: swagger → swagger-ui → auth hook → rutas
+- Los 4 endpoints de trigger aceptan un body JSON opcional `{ "CodSupplier": ["P001", "P002"] }` para filtrar por codigos. Sin body se procesan todos.
 
-| URL | Auth | Proposito |
-|---|---|---|
-| `/docs` | No | Swagger UI interactivo |
-| `/docs/json` | No | OpenAPI spec JSON |
-| `/docs/yaml` | No | OpenAPI spec YAML |
-| `/health` | No | Health check |
-| `/triggers/sync/suppliers` | Bearer | Sync bulk de suppliers |
-| `/triggers/sync/contacts` | Bearer | Sync bulk de contacts |
-| `/triggers/delete/suppliers` | Bearer | Delete bulk de suppliers |
-| `/triggers/delete/contacts` | Bearer | Delete bulk de contacts |
+| URL | Auth | Body opcional | Proposito |
+|---|---|---|---|
+| `/docs` | No | — | Swagger UI interactivo |
+| `/docs/json` | No | — | OpenAPI spec JSON |
+| `/docs/yaml` | No | — | OpenAPI spec YAML |
+| `/health` | No | — | Health check |
+| `/triggers/sync/suppliers` | Bearer | `{ CodSupplier?: string[] }` | Sync bulk de suppliers |
+| `/triggers/sync/contacts` | Bearer | `{ CodSupplier?: string[] }` | Sync bulk de contacts |
+| `/triggers/delete/suppliers` | Bearer | `{ CodSupplier?: string[] }` | Delete bulk de suppliers |
+| `/triggers/delete/contacts` | Bearer | `{ CodSupplier?: string[] }` | Delete bulk de contacts |
 
 ### Monitoring (Grafana + Loki + Promtail)
 
