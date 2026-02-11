@@ -28,5 +28,8 @@ npm-debug.log*
 loki-data/
 grafana-data/
 
+# Coverage
+coverage/
+
 # Tools
 .qodo/

@@ -77,6 +77,7 @@ Porque Kafka conserva todo el historico de mensajes. El consumer re-lee el histo
 informix-consumer/
 ├── package.json
 ├── tsconfig.json
+├── vitest.config.ts            # Config vitest (globals, root: src)
 ├── Dockerfile               # Multi-stage: build TS + runtime Node
 ├── docker-compose.yml       # Consumer + Loki + Promtail + Grafana
 ├── .dockerignore
@@ -148,6 +149,45 @@ Para añadir, por ejemplo, un payload `warehouse` alimentado por `ctercero` + `c
 4. Registrar en `index.ts`: `registry.register(new WarehouseBuilder())`
 
 **Zero cambios** en consumer, message handler, pending buffer, store o watched fields.
+
+## Tests
+
+Suite de tests unitarios con [vitest](https://vitest.dev/). 150 tests en 10 ficheros, ejecucion en ~500ms. Sin dependencias externas (sin Kafka, sin HTTP real).
+
+```bash
+npm test              # ejecutar toda la suite una vez
+npm run test:watch    # modo watch (re-ejecuta al guardar)
+```
+
+Los tests estan colocados junto al codigo fuente (`*.test.ts`), excluidos del build de TypeScript.
+
+### Que se testea
+
+**Tier 1 — Funciones puras** (sin mocks, sin side effects):
+
+| Fichero | Que testea | Tests |
+|---|---|---|
+| `payloads/payload-utils.test.ts` | `trimOrNull`, `isActive`, `formatDate` | 26 |
+| `domain/country-codes.test.ts` | `toISO2` (ISO3→ISO2 mapping) | 11 |
+| `domain/watched-fields.test.ts` | `detectChanges` (deteccion de campos cambiados) | 10 |
+| `kafka/snapshot-tracker.test.ts` | `SnapshotTracker` (maquina de estados) | 11 |
+
+**Tier 2 — Logica de negocio** (con mocks de store, logger, timers):
+
+| Fichero | Que testea | Tests |
+|---|---|---|
+| `domain/store.test.ts` | `InMemoryStore` (CRUD single/array, stats, clear) | 23 |
+| `payloads/supplier.test.ts` | `SupplierBuilder` (build, datos incompletos, Status) | 11 |
+| `payloads/supplier-contact.test.ts` | `SupplierContactBuilder` (N direcciones, Country, null fields) | 12 |
+| `dispatch/cdc-debouncer.test.ts` | `CdcDebouncer` (debounce, merge, batching, stop) | 12 |
+| `dispatch/pending-buffer.test.ts` | Pending buffer (retry, eviction, anti-overlap) | 11 |
+| `bulk/bulk-service.test.ts` | `BulkService` (sync/delete, skips, mutex, batching) | 23 |
+
+### Ejecutar un solo fichero
+
+```bash
+npx vitest run src/payloads/supplier.test.ts
+```
 
 ## Flujo del consumer (paso a paso)
 
@@ -450,6 +490,10 @@ docker compose up -d --build
 
 # Ver logs del consumer
 docker compose logs -f consumer
+
+# Tests
+npm test              # suite completa
+npm run test:watch    # modo watch
 ```
 
 El `docker-compose.yml` monta `./src` como volumen y usa `tsx --watch`. Los cambios en codigo se aplican automaticamente sin rebuild.
@@ -571,6 +615,7 @@ Nota: los campos `CHAR` de Informix vienen con espacios al final (padding). El c
 - **HTTP server**: Fastify 5 + `@fastify/swagger` + `@fastify/swagger-ui` (OpenAPI 3.0.3)
 - **Logging**: `pino` (JSON estructurado, zero-dep)
 - **Monitoring**: Grafana 11.5 + Loki 3.4 + Promtail 3.4
+- **Testing**: `vitest` (150 tests, ~500ms)
 - **Plataforma Docker**: `linux/amd64` (requerido por librdkafka en Apple Silicon)
 
 ## Seguridad y resiliencia
@@ -589,6 +634,7 @@ Nota: los campos `CHAR` de Informix vienen con espacios al final (padding). El c
 1. ~~Implementar `HttpDispatcher` para enviar payloads a la API REST destino~~ ✓
 2. ~~Implementar servidor HTTP con Trigger API (bulk sync/delete endpoints)~~ ✓
 3. ~~Documentacion Swagger/OpenAPI auto-generada para la Trigger API~~ ✓
-4. Manejo de reintentos HTTP y dead letter queue
-5. Filtrado por tipo de operacion si es necesario
-6. Alertas en Grafana (errores sostenidos, pending buffer creciendo)
+4. ~~Tests unitarios (Tier 1 + Tier 2)~~ ✓
+5. Manejo de reintentos HTTP y dead letter queue
+6. Filtrado por tipo de operacion si es necesario
+7. Alertas en Grafana (errores sostenidos, pending buffer creciendo)

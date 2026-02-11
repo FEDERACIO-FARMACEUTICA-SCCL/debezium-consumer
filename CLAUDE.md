@@ -20,6 +20,10 @@ docker compose logs -f consumer
 # Solo build
 npm run build
 
+# Tests
+npm test              # ejecutar toda la suite una vez
+npm run test:watch    # modo watch (re-ejecuta al guardar)
+
 # Desarrollo local (sin Docker, requiere Kafka accesible en localhost)
 npm run dev
 
@@ -100,6 +104,58 @@ src/
 4. Registrar en `index.ts`: `registry.register(new NuevoBuilder())`
 
 **Zero cambios** en consumer, message handler, pending buffer, store o watched fields.
+
+## Tests
+
+Suite de tests con **vitest**. 150 tests, ~500ms. Tests colocados junto al codigo fuente como `*.test.ts` (excluidos del build de TypeScript via `tsconfig.json`).
+
+```bash
+npm test              # ejecutar toda la suite una vez
+npm run test:watch    # modo watch (re-ejecuta al guardar)
+```
+
+### Configuracion
+
+- `vitest.config.ts` en raiz: `globals: true`, `root: "src"`
+- `tsconfig.json` excluye `src/**/*.test.ts` del build
+- `.gitignore` incluye `coverage/`
+
+### Tier 1 — Funciones puras (4 ficheros)
+
+| Fichero test | Modulo bajo test | Que cubre |
+|---|---|---|
+| `payloads/payload-utils.test.ts` | `trimOrNull`, `isActive`, `formatDate` | Null/undefined, whitespace, coercion de tipos, epoch days, ISO strings, fechas invalidas |
+| `domain/country-codes.test.ts` | `toISO2` | ISO3→ISO2, lowercase, passthrough ISO2, null/undefined, codigos desconocidos |
+| `domain/watched-fields.test.ts` | `detectChanges` | CREATE/READ/UPDATE/DELETE, whitespace normalization, tabla desconocida, uppercase table |
+| `kafka/snapshot-tracker.test.ts` | `SnapshotTracker` | Estado inicial, transiciones por topic, flag `last`, topics vacios, duplicados |
+
+### Tier 2 — Logica de negocio (6 ficheros)
+
+| Fichero test | Modulo bajo test | Que cubre |
+|---|---|---|
+| `domain/store.test.ts` | `InMemoryStore` | CRUD single/array, deduplicacion, whitespace matching, getStats, getAllCodigos, clear |
+| `payloads/supplier.test.ts` | `SupplierBuilder` | Build exitoso, datos incompletos, Status ACTIVE/INACTIVE, NIF null, trimming, StartDate |
+| `payloads/supplier-contact.test.ts` | `SupplierContactBuilder` | 1 y N direcciones, datos incompletos, Country ISO3→ISO2, campos null, Status |
+| `dispatch/cdc-debouncer.test.ts` | `CdcDebouncer` | Debounce timer, merge types/codigos, buffer overflow, batching, builder null→pending, dispatcher error, stop() |
+| `dispatch/pending-buffer.test.ts` | `addPending`, `startRetryLoop`, `stopRetryLoop` | Retry exitoso/parcial, max retries, age eviction, capacidad maxima, anti-overlap, dispatch error |
+| `bulk/bulk-service.test.ts` | `BulkService` | sync/delete suppliers/contacts, skippedDetails, batching, batch failure, mutex, filtro codigos |
+
+### Estrategia de mocking
+
+- **Store**: `vi.mock("../domain/store")` — se controlan retornos de `getSingle`/`getArray`/`getAllCodigos`
+- **Logger**: `vi.mock("../logger")` — silencia logs, stubs vacios
+- **Timers**: `vi.useFakeTimers()` + `vi.advanceTimersByTimeAsync()` para CdcDebouncer y PendingBuffer
+- **PendingBuffer**: `vi.resetModules()` + `import()` dinamico en cada test para resetear estado module-level
+- **PayloadRegistry/Dispatcher/ApiClient**: mocks manuales con `vi.fn()`
+- **watched-fields.test.ts**: `vi.mock("./table-registry")` para controlar `WATCHED_FIELDS` sin depender del registry real
+- **store.test.ts**: instancia `new InMemoryStore(miniRegistry)` con un registry custom (no usa el singleton global)
+
+### Como añadir tests para un nuevo payload type
+
+1. Crear `payloads/nuevo.test.ts`
+2. Mockear `store` y `logger` igual que en `supplier.test.ts`
+3. Controlar retornos de `store.getSingle`/`store.getArray` por tabla
+4. Verificar: build exitoso, datos incompletos → null, campos null, transformaciones
 
 ## Detalles tecnicos importantes
 
@@ -304,6 +360,7 @@ Volumes Docker: `loki-data`, `grafana-data` (persistencia entre reinicios).
 1. ~~Implementar `HttpDispatcher` para enviar payloads transformados a la API destino~~ ✓
 2. ~~Implementar servidor HTTP con Trigger API (bulk sync/delete endpoints)~~ ✓
 3. ~~Documentacion Swagger/OpenAPI auto-generada para la Trigger API~~ ✓
-4. Manejo de reintentos HTTP y dead letter queue
-5. Filtrado por tipo de operacion si es necesario
-6. Alertas en Grafana (ej. errores sostenidos, pending buffer creciendo)
+4. ~~Tests unitarios (Tier 1 + Tier 2)~~ ✓
+5. Manejo de reintentos HTTP y dead letter queue
+6. Filtrado por tipo de operacion si es necesario
+7. Alertas en Grafana (ej. errores sostenidos, pending buffer creciendo)
