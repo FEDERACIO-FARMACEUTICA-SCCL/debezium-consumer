@@ -12,7 +12,7 @@ export interface SupplierContactDeletion {
 export interface BulkResult {
   operation: "sync" | "delete";
   target: "supplier" | "contact";
-  totalCodigos: number;
+  totalCodsuppliers: number;
   totalItems: number;
   batches: number;
   successBatches: number;

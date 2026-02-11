@@ -5,7 +5,7 @@ const BulkResultResponse = {
   properties: {
     operation: { type: "string", enum: ["sync", "delete"] },
     target: { type: "string", enum: ["supplier", "contact"] },
-    totalCodigos: { type: "number" },
+    totalCodsuppliers: { type: "number" },
     totalItems: { type: "number" },
     batches: { type: "number" },
     successBatches: { type: "number" },

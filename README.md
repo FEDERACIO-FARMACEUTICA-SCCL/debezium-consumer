@@ -347,7 +347,7 @@ curl -X POST http://localhost:3001/triggers/delete/suppliers \
 {
   "operation": "sync",
   "target": "supplier",
-  "totalCodigos": 11234,
+  "totalCodsuppliers": 11234,
   "totalItems": 11200,
   "batches": 12,
   "successBatches": 12,

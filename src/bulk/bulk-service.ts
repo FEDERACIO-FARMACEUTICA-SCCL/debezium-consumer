@@ -57,7 +57,7 @@ export class BulkService {
     return {
       operation: "sync",
       target: "supplier",
-      totalCodigos: codigos.length,
+      totalCodsuppliers: codigos.length,
       totalItems: items.length,
       batches: totalBatches,
       successBatches,
@@ -90,7 +90,7 @@ export class BulkService {
     return {
       operation: "sync",
       target: "contact",
-      totalCodigos: codigos.length,
+      totalCodsuppliers: codigos.length,
       totalItems: items.length,
       batches: totalBatches,
       successBatches,
@@ -116,7 +116,7 @@ export class BulkService {
     return {
       operation: "delete",
       target: "supplier",
-      totalCodigos: codigos.length,
+      totalCodsuppliers: codigos.length,
       totalItems: items.length,
       batches: totalBatches,
       successBatches,
@@ -157,7 +157,7 @@ export class BulkService {
     return {
       operation: "delete",
       target: "contact",
-      totalCodigos: codigos.length,
+      totalCodsuppliers: codigos.length,
       totalItems: items.length,
       batches: totalBatches,
       successBatches,
