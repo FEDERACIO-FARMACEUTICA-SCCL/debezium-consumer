@@ -5,6 +5,7 @@ import { store } from "../domain/store";
 import { Supplier, SupplierContact } from "../types/payloads";
 import {
   BulkResult,
+  SkippedDetail,
   SupplierDeletion,
   SupplierContactDeletion,
 } from "../types/deletions";
@@ -40,14 +41,24 @@ export class BulkService {
     const builder = this.registry.get("supplier");
 
     const items: Supplier[] = [];
-    let skipped = 0;
+    const skippedDetails: SkippedDetail[] = [];
 
     for (const codigo of codigos) {
+      const ctercero = store.getSingle("ctercero", codigo);
+      if (!ctercero) {
+        skippedDetails.push({ CodSupplier: codigo, reason: "Not found in store (ctercero)" });
+        continue;
+      }
+      const gproveed = store.getSingle("gproveed", codigo);
+      if (!gproveed) {
+        skippedDetails.push({ CodSupplier: codigo, reason: "Incomplete data: missing gproveed" });
+        continue;
+      }
       const result = builder?.build(codigo) as Supplier[] | null;
       if (result) {
         items.push(...result);
       } else {
-        skipped++;
+        skippedDetails.push({ CodSupplier: codigo, reason: "Builder returned null" });
       }
     }
 
@@ -62,7 +73,8 @@ export class BulkService {
       batches: totalBatches,
       successBatches,
       failedBatches,
-      skipped,
+      skipped: skippedDetails.length,
+      skippedDetails,
       durationMs: Date.now() - start,
     };
   }
@@ -73,14 +85,29 @@ export class BulkService {
     const builder = this.registry.get("contact");
 
     const items: SupplierContact[] = [];
-    let skipped = 0;
+    const skippedDetails: SkippedDetail[] = [];
 
     for (const codigo of codigos) {
+      const ctercero = store.getSingle("ctercero", codigo);
+      if (!ctercero) {
+        skippedDetails.push({ CodSupplier: codigo, reason: "Not found in store (ctercero)" });
+        continue;
+      }
+      const gproveed = store.getSingle("gproveed", codigo);
+      if (!gproveed) {
+        skippedDetails.push({ CodSupplier: codigo, reason: "Incomplete data: missing gproveed" });
+        continue;
+      }
+      const direcciones = store.getArray("cterdire", codigo);
+      if (direcciones.length === 0) {
+        skippedDetails.push({ CodSupplier: codigo, reason: "No addresses found (cterdire)" });
+        continue;
+      }
       const result = builder?.build(codigo) as SupplierContact[] | null;
       if (result) {
         items.push(...result);
       } else {
-        skipped++;
+        skippedDetails.push({ CodSupplier: codigo, reason: "Builder returned null" });
       }
     }
 
@@ -95,7 +122,8 @@ export class BulkService {
       batches: totalBatches,
       successBatches,
       failedBatches,
-      skipped,
+      skipped: skippedDetails.length,
+      skippedDetails,
       durationMs: Date.now() - start,
     };
   }
@@ -105,10 +133,17 @@ export class BulkService {
     const codigos = filterCodigos ?? store.getAllCodigos("ctercero");
     const now = new Date().toISOString();
 
-    const items: SupplierDeletion[] = codigos.map((codigo) => ({
-      CodSupplier: codigo,
-      DeletionDate: now,
-    }));
+    const items: SupplierDeletion[] = [];
+    const skippedDetails: SkippedDetail[] = [];
+
+    for (const codigo of codigos) {
+      const ctercero = store.getSingle("ctercero", codigo);
+      if (!ctercero) {
+        skippedDetails.push({ CodSupplier: codigo, reason: "Not found in store (ctercero)" });
+        continue;
+      }
+      items.push({ CodSupplier: codigo, DeletionDate: now });
+    }
 
     const { successBatches, failedBatches, totalBatches } =
       await this.sendBatches("DELETE", "/ingest-api/suppliers", items, "delete", "supplier");
@@ -121,7 +156,8 @@ export class BulkService {
       batches: totalBatches,
       successBatches,
       failedBatches,
-      skipped: 0,
+      skipped: skippedDetails.length,
+      skippedDetails,
       durationMs: Date.now() - start,
     };
   }
@@ -130,18 +166,19 @@ export class BulkService {
     const start = Date.now();
     const codigos = filterCodigos ?? store.getAllCodigos("ctercero");
     const now = new Date().toISOString();
-    let skipped = 0;
 
     const items: SupplierContactDeletion[] = [];
+    const skippedDetails: SkippedDetail[] = [];
+
     for (const codigo of codigos) {
       const ctercero = store.getSingle("ctercero", codigo);
-      const nif = ctercero?.["cif"];
+      if (!ctercero) {
+        skippedDetails.push({ CodSupplier: codigo, reason: "Not found in store (ctercero)" });
+        continue;
+      }
+      const nif = ctercero["cif"];
       if (nif == null || String(nif).trim() === "") {
-        skipped++;
-        logger.warn(
-          { tag: "BulkSync", codigo },
-          "Skipping contact deletion: missing NIF"
-        );
+        skippedDetails.push({ CodSupplier: codigo, reason: "Missing NIF (cif)" });
         continue;
       }
       items.push({
@@ -162,7 +199,8 @@ export class BulkService {
       batches: totalBatches,
       successBatches,
       failedBatches,
-      skipped,
+      skipped: skippedDetails.length,
+      skippedDetails,
       durationMs: Date.now() - start,
     };
   }

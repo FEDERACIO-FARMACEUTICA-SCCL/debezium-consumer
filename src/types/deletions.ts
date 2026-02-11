@@ -9,6 +9,11 @@ export interface SupplierContactDeletion {
   DeletionDate?: string | null;
 }
 
+export interface SkippedDetail {
+  CodSupplier: string;
+  reason: string;
+}
+
 export interface BulkResult {
   operation: "sync" | "delete";
   target: "supplier" | "contact";
@@ -18,5 +23,6 @@ export interface BulkResult {
   successBatches: number;
   failedBatches: number;
   skipped: number;
+  skippedDetails: SkippedDetail[];
   durationMs: number;
 }

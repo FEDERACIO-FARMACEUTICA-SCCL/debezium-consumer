@@ -171,6 +171,42 @@ Los topics siguen el patron `{prefix}.{schema}.{table}` donde prefix=`informix` 
 - `persistAuthorization: true` guarda el token en localStorage entre recargas del Swagger UI
 - Orden de registro critico: swagger → swagger-ui → auth hook → rutas
 - Los 4 endpoints de trigger aceptan un body JSON opcional `{ "CodSupplier": ["P001", "P002"] }` para filtrar por codigos. Sin body se procesan todos.
+- La respuesta incluye `skippedDetails: { CodSupplier, reason }[]` con el motivo concreto de cada skip
+
+#### skippedDetails — motivos de skip por metodo
+
+Cada metodo bulk valida existencia en el store **antes** de llamar al builder o construir el payload de borrado. Los codigos que no pasan la validacion se reportan en `skippedDetails` con una reason especifica:
+
+| Metodo | Condicion | Reason |
+|---|---|---|
+| `syncSuppliers` | `ctercero` no existe | `"Not found in store (ctercero)"` |
+| `syncSuppliers` | `gproveed` no existe | `"Incomplete data: missing gproveed"` |
+| `syncSuppliers` | builder retorna null | `"Builder returned null"` |
+| `syncContacts` | `ctercero` no existe | `"Not found in store (ctercero)"` |
+| `syncContacts` | `gproveed` no existe | `"Incomplete data: missing gproveed"` |
+| `syncContacts` | sin direcciones | `"No addresses found (cterdire)"` |
+| `syncContacts` | builder retorna null | `"Builder returned null"` |
+| `deleteSuppliers` | `ctercero` no existe | `"Not found in store (ctercero)"` |
+| `deleteContacts` | `ctercero` no existe | `"Not found in store (ctercero)"` |
+| `deleteContacts` | NIF nulo o vacio | `"Missing NIF (cif)"` |
+
+Ejemplo de respuesta con skips:
+```json
+{
+  "operation": "sync",
+  "target": "supplier",
+  "totalCodsuppliers": 3,
+  "totalItems": 2,
+  "batches": 1,
+  "successBatches": 1,
+  "failedBatches": 0,
+  "skipped": 1,
+  "skippedDetails": [
+    { "CodSupplier": "ZZZZ", "reason": "Not found in store (ctercero)" }
+  ],
+  "durationMs": 15
+}
+```
 
 | URL | Auth | Body opcional | Proposito |
 |---|---|---|---|

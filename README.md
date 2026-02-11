@@ -353,9 +353,28 @@ curl -X POST http://localhost:3001/triggers/delete/suppliers \
   "successBatches": 12,
   "failedBatches": 0,
   "skipped": 34,
+  "skippedDetails": [
+    { "CodSupplier": "ZZZZ", "reason": "Not found in store (ctercero)" },
+    { "CodSupplier": "P099", "reason": "Incomplete data: missing gproveed" }
+  ],
   "durationMs": 8432
 }
 ```
+
+El campo `skippedDetails` es un array con una entrada por cada codigo que no se pudo procesar. Cada entrada indica el `CodSupplier` y el motivo concreto del skip. Los motivos posibles dependen de la operacion:
+
+| Operacion | Condicion | Reason |
+|---|---|---|
+| sync suppliers | `ctercero` no existe en store | `"Not found in store (ctercero)"` |
+| sync suppliers | `gproveed` no existe en store | `"Incomplete data: missing gproveed"` |
+| sync suppliers | builder retorna null | `"Builder returned null"` |
+| sync contacts | `ctercero` no existe en store | `"Not found in store (ctercero)"` |
+| sync contacts | `gproveed` no existe en store | `"Incomplete data: missing gproveed"` |
+| sync contacts | sin direcciones en store | `"No addresses found (cterdire)"` |
+| sync contacts | builder retorna null | `"Builder returned null"` |
+| delete suppliers | `ctercero` no existe en store | `"Not found in store (ctercero)"` |
+| delete contacts | `ctercero` no existe en store | `"Not found in store (ctercero)"` |
+| delete contacts | NIF nulo o vacio | `"Missing NIF (cif)"` |
 
 ### Swagger UI (documentacion interactiva)
 

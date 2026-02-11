@@ -11,6 +11,16 @@ const BulkResultResponse = {
     successBatches: { type: "number" },
     failedBatches: { type: "number" },
     skipped: { type: "number" },
+    skippedDetails: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          CodSupplier: { type: "string" },
+          reason: { type: "string" },
+        },
+      },
+    },
     durationMs: { type: "number" },
   },
 } as const;
