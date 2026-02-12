@@ -10,6 +10,9 @@ export interface TableDefinition {
   storeKind: "single" | "array";
   watchedFields: WatchedField[];
   topic: string;
+  /** Fields to keep in the in-memory store (all others are discarded).
+   *  Omit or set to empty to keep all fields (no filtering). */
+  storeFields?: string[];
 }
 
 export const TABLE_REGISTRY: TableDefinition[] = [
@@ -23,6 +26,7 @@ export const TABLE_REGISTRY: TableDefinition[] = [
       { field: "codare", payloads: ["supplier", "contact"] },
     ],
     topic: "informix.informix.ctercero",
+    storeFields: ["codigo", "nombre", "cif", "codare"],
   },
   {
     table: "gproveed",
@@ -32,6 +36,7 @@ export const TABLE_REGISTRY: TableDefinition[] = [
       { field: "fecbaj", payloads: ["supplier", "contact"] },
     ],
     topic: "informix.informix.gproveed",
+    storeFields: ["codigo", "fecalt", "fecbaj"],
   },
   {
     table: "cterdire",
@@ -45,6 +50,7 @@ export const TABLE_REGISTRY: TableDefinition[] = [
       { field: "email", payloads: ["contact"] },
     ],
     topic: "informix.informix.cterdire",
+    storeFields: ["codigo", "tipdir", "direcc", "poblac", "codnac", "codpos", "telef1", "email"],
   },
 ];
 

@@ -67,7 +67,7 @@ src/
     table-registry.ts           # Fuente unica de verdad para TABLAS: watched fields, store kinds, payload mappings
     entity-registry.ts          # Fuente unica de verdad para ENTIDADES: type, label, triggerPath, apiPath, swagger
     codare-registry.ts          # Filtro de negocio: codare → PayloadType[] (que tipos de tercero disparan cada entidad)
-    store.ts                    # Clase InMemoryStore (data-driven desde table-registry)
+    store.ts                    # Clase InMemoryStore (data-driven desde table-registry, con filtrado de campos via storeFields)
     watched-fields.ts           # detectChanges() lee WATCHED_FIELDS del table-registry
     country-codes.ts            # Mapping ISO3 → ISO2 para codigos de pais
 
@@ -167,11 +167,12 @@ Para añadir, por ejemplo, una entidad `warehouse`:
 Si solo necesitas añadir una tabla que alimenta entidades existentes (ej: una tabla que aporta datos a `supplier`):
 
 1. Añadir `TableDefinition` a `TABLE_REGISTRY` en `domain/table-registry.ts`
-2. Todos los lookups derivados (`TABLE_MAP`, `WATCHED_FIELDS`, `FIELD_TO_PAYLOADS`, `ALL_TOPICS`) se auto-actualizan
+2. Definir `storeFields` con los campos necesarios para los builders (optimizacion de memoria)
+3. Todos los lookups derivados (`TABLE_MAP`, `WATCHED_FIELDS`, `FIELD_TO_PAYLOADS`, `ALL_TOPICS`) se auto-actualizan
 
 ## Tests
 
-Suite de tests con **vitest**. **179 tests** en 14 ficheros, ~400ms. Tests colocados junto al codigo fuente como `*.test.ts` (excluidos del build de TypeScript via `tsconfig.json`).
+Suite de tests con **vitest**. **184 tests** en 14 ficheros, ~400ms. Tests colocados junto al codigo fuente como `*.test.ts` (excluidos del build de TypeScript via `tsconfig.json`).
 
 ```bash
 npm test              # ejecutar toda la suite una vez
@@ -199,7 +200,7 @@ npm run test:watch    # modo watch (re-ejecuta al guardar)
 
 | Fichero test | Modulo bajo test | Que cubre |
 |---|---|---|
-| `domain/store.test.ts` | `InMemoryStore` | CRUD single/array, deduplicacion, whitespace matching, getStats, getAllCodigos, clear |
+| `domain/store.test.ts` | `InMemoryStore` | CRUD single/array, deduplicacion, whitespace matching, getStats, getAllCodigos, storeFields filtering, clear |
 | `payloads/supplier.test.ts` | `SupplierBuilder` | Build exitoso, datos incompletos, Status ACTIVE/INACTIVE, NIF null, trimming, StartDate |
 | `payloads/supplier-contact.test.ts` | `SupplierContactBuilder` | 1 y N direcciones, datos incompletos, Country ISO3→ISO2, campos null, Status |
 | `dispatch/cdc-debouncer.test.ts` | `CdcDebouncer` | Debounce timer, merge types/codigos, buffer overflow, batching, builder null→pending, dispatcher error, stop() |
@@ -218,7 +219,7 @@ npm run test:watch    # modo watch (re-ejecuta al guardar)
 - **BulkHandler**: mock manual `{ type, syncAll: vi.fn(), deleteAll: vi.fn() }` para tests del BulkService generico
 - **Entity Registry**: `vi.mock("../domain/entity-registry")` con ENTITY_MAP mock para tests de BulkService
 - **watched-fields.test.ts**: `vi.mock("./table-registry")` para controlar `WATCHED_FIELDS` sin depender del registry real
-- **store.test.ts**: instancia `new InMemoryStore(miniRegistry)` con un registry custom (no usa el singleton global)
+- **store.test.ts**: instancia `new InMemoryStore(miniRegistry)` con un registry custom (no usa el singleton global). Tests de `storeFields` usan `filteredRegistry` separado
 
 ### Como añadir tests para una nueva entidad
 
@@ -253,9 +254,11 @@ npm run test:watch    # modo watch (re-ejecuta al guardar)
   - `subscribe()` acepta `{ topics: string[] }`, no `{ topic, fromBeginning }`
 
 ### Table Registry (fuente unica de verdad para tablas)
-- `domain/table-registry.ts` define `TABLE_REGISTRY` con todas las tablas, sus store kinds, watched fields (con mapping campo→payloads) y topics
+- `domain/table-registry.ts` define `TABLE_REGISTRY` con todas las tablas, sus store kinds, watched fields (con mapping campo→payloads), topics y `storeFields`
 - Lookups derivados computados una vez al cargar modulo: `TABLE_MAP`, `WATCHED_FIELDS`, `FIELD_TO_PAYLOADS`, `ALL_TOPICS`
 - `FIELD_TO_PAYLOADS` mapea `"tabla.campo"` → `Set<PayloadType>`, permitiendo granularidad a nivel de campo
+- `storeFields` (opcional): lista de campos a conservar en el store. Los campos no listados se descartan al escribir. Motivacion: Debezium tiene un bug que impide filtrar columnas en origen — siempre envia TODAS las columnas de cada tabla Informix (que puede tener 30+ campos), pero los builders solo necesitan un subconjunto
+- Si se omite `storeFields`, se conservan todos los campos (backward compatible)
 - Elimina la necesidad de hardcodear nombres de tabla en multiples ficheros
 
 ### Entity Registry (fuente unica de verdad para entidades)

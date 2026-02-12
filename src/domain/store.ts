@@ -5,6 +5,7 @@ export type StoreRecord = Record<string, unknown>;
 export class InMemoryStore {
   private singleStores = new Map<string, Map<string, StoreRecord>>();
   private arrayStores = new Map<string, Map<string, StoreRecord[]>>();
+  private fieldFilters = new Map<string, Set<string>>();
 
   constructor(definitions: TableDefinition[] = TABLE_REGISTRY) {
     for (const def of definitions) {
@@ -12,6 +13,9 @@ export class InMemoryStore {
         this.singleStores.set(def.table, new Map());
       } else {
         this.arrayStores.set(def.table, new Map());
+      }
+      if (def.storeFields?.length) {
+        this.fieldFilters.set(def.table, new Set(def.storeFields));
       }
     }
   }
@@ -23,10 +27,13 @@ export class InMemoryStore {
     after: StoreRecord | null
   ): void {
     const tableLower = table.toLowerCase();
+    const fields = this.fieldFilters.get(tableLower);
+    const filteredBefore = pickFields(before, fields);
+    const filteredAfter = pickFields(after, fields);
 
     const arrayStore = this.arrayStores.get(tableLower);
     if (arrayStore) {
-      this.updateArrayStore(arrayStore, op, before, after);
+      this.updateArrayStore(arrayStore, op, filteredBefore, filteredAfter);
       return;
     }
 
@@ -34,11 +41,11 @@ export class InMemoryStore {
     if (!singleStore) return;
 
     if (op === "d") {
-      const codigo = String(before?.["codigo"] ?? "").trim();
+      const codigo = String(filteredBefore?.["codigo"] ?? "").trim();
       if (codigo) singleStore.delete(codigo);
     } else {
-      const codigo = String(after?.["codigo"] ?? "").trim();
-      if (codigo && after) singleStore.set(codigo, after);
+      const codigo = String(filteredAfter?.["codigo"] ?? "").trim();
+      if (codigo && filteredAfter) singleStore.set(codigo, filteredAfter);
     }
   }
 
@@ -164,6 +171,18 @@ export class InMemoryStore {
     if (typeof val === "string") return val.trim();
     return val;
   }
+}
+
+function pickFields(
+  record: StoreRecord | null,
+  fields: Set<string> | undefined
+): StoreRecord | null {
+  if (!record || !fields) return record;
+  const out: StoreRecord = {};
+  for (const key of fields) {
+    if (key in record) out[key] = record[key];
+  }
+  return out;
 }
 
 function estimateRecordBytes(record: StoreRecord): number {

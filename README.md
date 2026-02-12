@@ -42,6 +42,8 @@ Cada vez que el consumer arranca, **lee todos los mensajes de Kafka desde el pri
 
 Al terminar de re-leer todo el historico, el consumer tiene una **copia en memoria** de las tablas relevantes, equivalente a hacer un `SELECT * FROM ctercero` y `SELECT * FROM gproveed`.
 
+**Optimizacion de memoria (`storeFields`)**: Debezium tiene un bug que impide filtrar columnas en origen — siempre envia TODAS las columnas de cada tabla Informix (que puede tener 30+ campos). Para evitar almacenar campos innecesarios, cada tabla en el registry declara `storeFields`: la lista de campos a conservar. Los campos no listados se descartan al escribir en el store (`pickFields()`). Ejemplo: `ctercero` solo conserva `codigo`, `nombre`, `cif` y `codare` de los 30+ campos que envia Debezium.
+
 ```
 Kafka (historico completo)          In-memory Store
 +----------------------------+      +---------------------------+
@@ -103,9 +105,10 @@ informix-consumer/
     │   └── deletions.ts             # Interfaces de borrado, SkippedDetail, BulkResult
     │
     ├── domain/
-    │   ├── table-registry.ts        # Fuente unica de verdad para TABLAS y mappings CDC
+    │   ├── table-registry.ts        # Fuente unica de verdad para TABLAS, mappings CDC y storeFields
     │   ├── entity-registry.ts       # Fuente unica de verdad para ENTIDADES (API, triggers, labels)
-    │   ├── store.ts                 # InMemoryStore data-driven desde table-registry
+    │   ├── codare-registry.ts       # Filtro de negocio: codare → PayloadType[] (que terceros disparan cada entidad)
+    │   ├── store.ts                 # InMemoryStore data-driven desde table-registry (con filtrado de campos)
     │   ├── watched-fields.ts        # Deteccion de cambios en campos monitorizados
     │   └── country-codes.ts         # Mapping ISO3 → ISO2 para codigos de pais
     │
@@ -155,7 +158,7 @@ informix-consumer/
 
 El proyecto tiene dos registries data-driven complementarios:
 
-- **`domain/table-registry.ts`** — define las **tablas** del pipeline CDC: que campos monitorizar, como almacenar en el store, que payload types alimenta cada campo. Es la fuente de verdad para `store.ts`, `watched-fields.ts`, `message-handler.ts`.
+- **`domain/table-registry.ts`** — define las **tablas** del pipeline CDC: que campos monitorizar, como almacenar en el store, que payload types alimenta cada campo, y que campos conservar en memoria (`storeFields`). Es la fuente de verdad para `store.ts`, `watched-fields.ts`, `message-handler.ts`.
 
 - **`domain/entity-registry.ts`** — define las **entidades** de la capa API/Trigger: tipo, label para logs, ruta HTTP del trigger, endpoint de la API externa, y metadatos Swagger. Es la fuente de verdad para `server.ts`, `schemas.ts`, `dispatcher.ts`, `cdc-debouncer.ts`, `pending-buffer.ts`, `bulk-service.ts`.
 
@@ -178,7 +181,7 @@ Para añadir, por ejemplo, una entidad `warehouse`:
 
 ## Tests
 
-Suite de tests unitarios con [vitest](https://vitest.dev/). **164 tests** en 13 ficheros, ejecucion en ~500ms. Sin dependencias externas (sin Kafka, sin HTTP real).
+Suite de tests unitarios con [vitest](https://vitest.dev/). **184 tests** en 14 ficheros, ejecucion en ~400ms. Sin dependencias externas (sin Kafka, sin HTTP real).
 
 ```bash
 npm test              # ejecutar toda la suite una vez
@@ -198,19 +201,20 @@ Los tests estan colocados junto al codigo fuente (`*.test.ts`), excluidos del bu
 | `domain/watched-fields.test.ts` | `detectChanges` (deteccion de campos cambiados) | 10 |
 | `kafka/snapshot-tracker.test.ts` | `SnapshotTracker` (maquina de estados) | 11 |
 | `domain/entity-registry.test.ts` | `ENTITY_REGISTRY`, lookups derivados, unicidad | 7 |
+| `domain/codare-registry.test.ts` | `CODARE_REGISTRY`, `getAllowedTypes` (PRO mapping, null, whitespace) | 9 |
 
 **Tier 2 — Logica de negocio** (con mocks de store, logger, timers):
 
 | Fichero | Que testea | Tests |
 |---|---|---|
-| `domain/store.test.ts` | `InMemoryStore` (CRUD single/array, stats, clear) | 23 |
+| `domain/store.test.ts` | `InMemoryStore` (CRUD single/array, storeFields filtering, stats, clear) | 28 |
 | `payloads/supplier.test.ts` | `SupplierBuilder` (build, datos incompletos, Status) | 11 |
 | `payloads/supplier-contact.test.ts` | `SupplierContactBuilder` (N direcciones, Country, null fields) | 12 |
 | `dispatch/cdc-debouncer.test.ts` | `CdcDebouncer` (debounce, merge, batching, stop) | 12 |
 | `dispatch/pending-buffer.test.ts` | Pending buffer (retry, eviction, anti-overlap) | 11 |
 | `bulk/bulk-service.test.ts` | `BulkService` generico (sync/delete por tipo, batching, mutex) | 14 |
-| `bulk/handlers/supplier-handler.test.ts` | `SupplierBulkHandler` (syncAll/deleteAll, skippedDetails) | 7 |
-| `bulk/handlers/contact-handler.test.ts` | `ContactBulkHandler` (syncAll/deleteAll, skippedDetails) | 9 |
+| `bulk/handlers/supplier-handler.test.ts` | `SupplierBulkHandler` (syncAll/deleteAll, skippedDetails, codare filter) | 10 |
+| `bulk/handlers/contact-handler.test.ts` | `ContactBulkHandler` (syncAll/deleteAll, skippedDetails, codare filter) | 12 |
 
 ### Ejecutar un solo fichero
 
@@ -250,6 +254,11 @@ FIELD_TO_PAYLOADS: para cada campo cambiado, que payload types afecta?
   (acumula un Set<PayloadType> con la union de todos los campos cambiados)
   |
   v
+Filtro codare: intersectar payloadTypes con getAllowedTypes(codare)
+  |-- codare no registrado --> Ignorar (no se genera payload)
+  |-- codare valido (ej: PRO) --> Continuar con tipos permitidos
+  |
+  v
 CdcDebouncer.enqueue(codigo, payloadTypes)
   |
   v
@@ -276,6 +285,7 @@ Solo se procesan cambios cuando estos campos especificos se modifican. La decisi
 | `ctercero.codigo` | Si | Si | Ambos |
 | `ctercero.nombre` | Si | Si | Ambos |
 | `ctercero.cif` | Si | Si | Ambos |
+| `ctercero.codare` | Si | Si | Ambos |
 | `gproveed.fecalt` | Si | No | Solo Supplier |
 | `gproveed.fecbaj` | Si | Si | Ambos |
 | `cterdire.direcc` | No | Si | Solo Contact |
@@ -296,6 +306,16 @@ Solo se procesan cambios cuando estos campos especificos se modifican. La decisi
 | Cualquier campo de **cterdire** | Solo Contact | direcciones solo existen en SupplierContact |
 
 Si cambian campos de varias tablas en la misma transaccion, cada evento CDC se procesa por separado y solo dispara los payloads que le corresponden.
+
+### Filtro por codare (tipo de tercero)
+
+Las tablas `ctercero`, `gproveed` y `cterdire` contienen distintos tipos de terceros (proveedores, clientes, laboratorios...). El campo `codare` de `ctercero` indica el tipo. Solo los codigos con un `codare` registrado generan payloads. Actualmente solo `"PRO"` (proveedor) esta registrado, habilitando Supplier y SupplierContact.
+
+El filtro se aplica en dos puntos:
+- **CDC en tiempo real** (`message-handler.ts`): se intersectan los payload types con los tipos permitidos por el codare antes de encolar al debouncer
+- **Trigger API** (bulk handlers): cada `syncAll`/`deleteAll` valida el codare y reporta `"codare 'XXX' not applicable"` en `skippedDetails`
+
+El store almacena TODOS los registros sin filtrar — el codare solo filtra el dispatch. Configurado en `domain/codare-registry.ts`.
 
 ## Payloads
 
@@ -482,14 +502,18 @@ El campo `skippedDetails` es un array con una entrada por cada codigo que no se 
 | Handler | Operacion | Condicion | Reason |
 |---|---|---|---|
 | `SupplierBulkHandler` | sync | `ctercero` no existe en store | `"Not found in store (ctercero)"` |
+| `SupplierBulkHandler` | sync | codare no aplicable | `"codare 'XXX' not applicable"` |
 | `SupplierBulkHandler` | sync | `gproveed` no existe en store | `"Incomplete data: missing gproveed"` |
 | `SupplierBulkHandler` | sync | builder retorna null | `"Builder returned null"` |
 | `SupplierBulkHandler` | delete | `ctercero` no existe en store | `"Not found in store (ctercero)"` |
+| `SupplierBulkHandler` | delete | codare no aplicable | `"codare 'XXX' not applicable"` |
 | `ContactBulkHandler` | sync | `ctercero` no existe en store | `"Not found in store (ctercero)"` |
+| `ContactBulkHandler` | sync | codare no aplicable | `"codare 'XXX' not applicable"` |
 | `ContactBulkHandler` | sync | `gproveed` no existe en store | `"Incomplete data: missing gproveed"` |
 | `ContactBulkHandler` | sync | sin direcciones en store | `"No addresses found (cterdire)"` |
 | `ContactBulkHandler` | sync | builder retorna null | `"Builder returned null"` |
 | `ContactBulkHandler` | delete | `ctercero` no existe en store | `"Not found in store (ctercero)"` |
+| `ContactBulkHandler` | delete | codare no aplicable | `"codare 'XXX' not applicable"` |
 | `ContactBulkHandler` | delete | NIF nulo o vacio | `"Missing NIF (cif)"` |
 
 ### Swagger UI (documentacion interactiva)
@@ -709,7 +733,7 @@ Nota: los campos `CHAR` de Informix vienen con espacios al final (padding). El c
 - **HTTP server**: Fastify 5 + `@fastify/swagger` + `@fastify/swagger-ui` (OpenAPI 3.0.3)
 - **Logging**: `pino` (JSON estructurado, zero-dep)
 - **Monitoring**: Grafana 11.5 + Loki 3.4 + Promtail 3.4
-- **Testing**: `vitest` (164 tests, ~500ms)
+- **Testing**: `vitest` (184 tests, ~400ms)
 - **Plataforma Docker**: `linux/amd64` (requerido por librdkafka en Apple Silicon)
 
 ## Seguridad y resiliencia

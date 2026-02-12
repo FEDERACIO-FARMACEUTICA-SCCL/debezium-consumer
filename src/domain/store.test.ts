@@ -23,6 +23,23 @@ const miniRegistry: TableDefinition[] = [
   },
 ];
 
+const filteredRegistry: TableDefinition[] = [
+  {
+    table: "ctercero",
+    storeKind: "single",
+    watchedFields: [],
+    topic: "t.ctercero",
+    storeFields: ["codigo", "nombre"],
+  },
+  {
+    table: "cterdire",
+    storeKind: "array",
+    watchedFields: [],
+    topic: "t.cterdire",
+    storeFields: ["codigo", "direcc"],
+  },
+];
+
 describe("InMemoryStore", () => {
   let store: InMemoryStore;
 
@@ -276,6 +293,89 @@ describe("InMemoryStore", () => {
 
     it("returns empty array for unknown table", () => {
       expect(store.getAllCodigos("nonexistent")).toEqual([]);
+    });
+  });
+
+  describe("storeFields filtering", () => {
+    let filtered: InMemoryStore;
+
+    beforeEach(() => {
+      filtered = new InMemoryStore(filteredRegistry);
+    });
+
+    it("keeps only declared fields on single store create", () => {
+      filtered.update("ctercero", "c", null, {
+        codigo: "P001",
+        nombre: "Acme",
+        cif: "B1234",
+        extra: "drop me",
+      });
+
+      const record = filtered.getSingle("ctercero", "P001");
+      expect(record).toEqual({ codigo: "P001", nombre: "Acme" });
+      expect(record).not.toHaveProperty("cif");
+      expect(record).not.toHaveProperty("extra");
+    });
+
+    it("keeps only declared fields on single store update", () => {
+      filtered.update("ctercero", "c", null, {
+        codigo: "P001",
+        nombre: "Old",
+        cif: "B1",
+      });
+      filtered.update(
+        "ctercero",
+        "u",
+        { codigo: "P001", nombre: "Old", cif: "B1" },
+        { codigo: "P001", nombre: "New", cif: "B2" }
+      );
+
+      const record = filtered.getSingle("ctercero", "P001");
+      expect(record).toEqual({ codigo: "P001", nombre: "New" });
+    });
+
+    it("keeps only declared fields on array store create", () => {
+      filtered.update("cterdire", "c", null, {
+        codigo: "P001",
+        direcc: "Calle 1",
+        poblac: "Madrid",
+        extra: "drop",
+      });
+
+      const arr = filtered.getArray("cterdire", "P001");
+      expect(arr).toHaveLength(1);
+      expect(arr[0]).toEqual({ codigo: "P001", direcc: "Calle 1" });
+      expect(arr[0]).not.toHaveProperty("poblac");
+    });
+
+    it("filters before record for array store matching", () => {
+      filtered.update("cterdire", "c", null, {
+        codigo: "P001",
+        direcc: "Calle 1",
+        poblac: "Madrid",
+      });
+      filtered.update(
+        "cterdire",
+        "u",
+        { codigo: "P001", direcc: "Calle 1", poblac: "Madrid" },
+        { codigo: "P001", direcc: "Calle 2", poblac: "Barcelona" }
+      );
+
+      const arr = filtered.getArray("cterdire", "P001");
+      expect(arr).toHaveLength(1);
+      expect(arr[0]).toEqual({ codigo: "P001", direcc: "Calle 2" });
+    });
+
+    it("does not filter when storeFields is omitted", () => {
+      // miniRegistry has no storeFields → all fields kept
+      store.update("ctercero", "c", null, {
+        codigo: "P001",
+        nombre: "Acme",
+        extra: "kept",
+      });
+
+      const record = store.getSingle("ctercero", "P001");
+      expect(record).toHaveProperty("extra", "kept");
     });
   });
 
