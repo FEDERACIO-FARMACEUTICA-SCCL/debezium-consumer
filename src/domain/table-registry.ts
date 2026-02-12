@@ -13,6 +13,8 @@ export interface TableDefinition {
   /** Fields to keep in the in-memory store (all others are discarded).
    *  Omit or set to empty to keep all fields (no filtering). */
   storeFields?: string[];
+  /** Field used as grouping key in the store (default: "codigo"). */
+  keyField?: string;
 }
 
 export const TABLE_REGISTRY: TableDefinition[] = [
@@ -51,6 +53,14 @@ export const TABLE_REGISTRY: TableDefinition[] = [
     ],
     topic: "informix.informix.cterdire",
     storeFields: ["codigo", "tipdir", "direcc", "poblac", "codnac", "codpos", "telef1", "email"],
+  },
+  {
+    table: "cterasoc",
+    storeKind: "array",
+    watchedFields: [],
+    topic: "informix.informix.cterasoc",
+    storeFields: ["seqno", "tipaso", "tercer"],
+    keyField: "tercer",
   },
 ];
 

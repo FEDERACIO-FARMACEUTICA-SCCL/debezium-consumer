@@ -6,6 +6,7 @@ export class InMemoryStore {
   private singleStores = new Map<string, Map<string, StoreRecord>>();
   private arrayStores = new Map<string, Map<string, StoreRecord[]>>();
   private fieldFilters = new Map<string, Set<string>>();
+  private keyFields = new Map<string, string>();
 
   constructor(definitions: TableDefinition[] = TABLE_REGISTRY) {
     for (const def of definitions) {
@@ -17,6 +18,7 @@ export class InMemoryStore {
       if (def.storeFields?.length) {
         this.fieldFilters.set(def.table, new Set(def.storeFields));
       }
+      this.keyFields.set(def.table, def.keyField ?? "codigo");
     }
   }
 
@@ -31,9 +33,11 @@ export class InMemoryStore {
     const filteredBefore = pickFields(before, fields);
     const filteredAfter = pickFields(after, fields);
 
+    const keyField = this.keyFields.get(tableLower) ?? "codigo";
+
     const arrayStore = this.arrayStores.get(tableLower);
     if (arrayStore) {
-      this.updateArrayStore(arrayStore, op, filteredBefore, filteredAfter);
+      this.updateArrayStore(arrayStore, op, filteredBefore, filteredAfter, keyField);
       return;
     }
 
@@ -41,11 +45,11 @@ export class InMemoryStore {
     if (!singleStore) return;
 
     if (op === "d") {
-      const codigo = String(filteredBefore?.["codigo"] ?? "").trim();
-      if (codigo) singleStore.delete(codigo);
+      const key = String(filteredBefore?.[keyField] ?? "").trim();
+      if (key) singleStore.delete(key);
     } else {
-      const codigo = String(filteredAfter?.["codigo"] ?? "").trim();
-      if (codigo && filteredAfter) singleStore.set(codigo, filteredAfter);
+      const key = String(filteredAfter?.[keyField] ?? "").trim();
+      if (key && filteredAfter) singleStore.set(key, filteredAfter);
     }
   }
 
@@ -108,51 +112,52 @@ export class InMemoryStore {
     store: Map<string, StoreRecord[]>,
     op: string,
     before: StoreRecord | null,
-    after: StoreRecord | null
+    after: StoreRecord | null,
+    keyField: string
   ): void {
     if (op === "c" || op === "r") {
       if (!after) return;
-      const codigo = String(after["codigo"] ?? "").trim();
-      if (!codigo) return;
+      const key = String(after[keyField] ?? "").trim();
+      if (!key) return;
 
-      const arr = store.get(codigo) ?? [];
+      const arr = store.get(key) ?? [];
       const duplicate = arr.some((r) => this.recordsMatch(r, after));
       if (!duplicate) {
         arr.push(after);
-        store.set(codigo, arr);
+        store.set(key, arr);
       }
       return;
     }
 
     if (op === "u") {
       if (!before || !after) return;
-      const codigo = String(before["codigo"] ?? "").trim();
-      if (!codigo) return;
+      const key = String(before[keyField] ?? "").trim();
+      if (!key) return;
 
-      const arr = store.get(codigo) ?? [];
+      const arr = store.get(key) ?? [];
       const idx = arr.findIndex((r) => this.recordsMatch(r, before));
       if (idx >= 0) {
         arr[idx] = after;
       } else {
         arr.push(after);
       }
-      store.set(codigo, arr);
+      store.set(key, arr);
       return;
     }
 
     if (op === "d") {
       if (!before) return;
-      const codigo = String(before["codigo"] ?? "").trim();
-      if (!codigo) return;
+      const key = String(before[keyField] ?? "").trim();
+      if (!key) return;
 
-      const arr = store.get(codigo) ?? [];
+      const arr = store.get(key) ?? [];
       const idx = arr.findIndex((r) => this.recordsMatch(r, before));
       if (idx >= 0) {
         arr.splice(idx, 1);
         if (arr.length === 0) {
-          store.delete(codigo);
+          store.delete(key);
         } else {
-          store.set(codigo, arr);
+          store.set(key, arr);
         }
       }
     }

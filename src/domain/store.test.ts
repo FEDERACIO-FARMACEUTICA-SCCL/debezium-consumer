@@ -23,6 +23,17 @@ const miniRegistry: TableDefinition[] = [
   },
 ];
 
+const customKeyRegistry: TableDefinition[] = [
+  {
+    table: "cterasoc",
+    storeKind: "array",
+    watchedFields: [],
+    topic: "t.cterasoc",
+    storeFields: ["seqno", "tipaso", "tercer"],
+    keyField: "tercer",
+  },
+];
+
 const filteredRegistry: TableDefinition[] = [
   {
     table: "ctercero",
@@ -376,6 +387,74 @@ describe("InMemoryStore", () => {
 
       const record = store.getSingle("ctercero", "P001");
       expect(record).toHaveProperty("extra", "kept");
+    });
+  });
+
+  describe("custom keyField", () => {
+    let customStore: InMemoryStore;
+
+    beforeEach(() => {
+      customStore = new InMemoryStore(customKeyRegistry);
+    });
+
+    it("uses custom keyField for array store create", () => {
+      customStore.update("cterasoc", "c", null, {
+        tercer: "P001",
+        seqno: 1,
+        tipaso: "A",
+      });
+
+      expect(customStore.getArray("cterasoc", "P001")).toHaveLength(1);
+      expect(customStore.getArray("cterasoc", "P001")[0]).toEqual({
+        tercer: "P001",
+        seqno: 1,
+        tipaso: "A",
+      });
+    });
+
+    it("uses custom keyField for array store update", () => {
+      customStore.update("cterasoc", "c", null, {
+        tercer: "P001",
+        seqno: 1,
+        tipaso: "A",
+      });
+      customStore.update(
+        "cterasoc",
+        "u",
+        { tercer: "P001", seqno: 1, tipaso: "A" },
+        { tercer: "P001", seqno: 1, tipaso: "B" }
+      );
+
+      const arr = customStore.getArray("cterasoc", "P001");
+      expect(arr).toHaveLength(1);
+      expect(arr[0]["tipaso"]).toBe("B");
+    });
+
+    it("uses custom keyField for array store delete", () => {
+      customStore.update("cterasoc", "c", null, {
+        tercer: "P001",
+        seqno: 1,
+        tipaso: "A",
+      });
+      customStore.update(
+        "cterasoc",
+        "d",
+        { tercer: "P001", seqno: 1, tipaso: "A" },
+        null
+      );
+
+      expect(customStore.getArray("cterasoc", "P001")).toEqual([]);
+      expect(customStore.getAllCodigos("cterasoc")).not.toContain("P001");
+    });
+
+    it("defaults to 'codigo' when keyField is not set", () => {
+      // miniRegistry has no keyField → uses "codigo" by default
+      store.update("cterdire", "c", null, {
+        codigo: "P001",
+        direcc: "Calle 1",
+      });
+
+      expect(store.getArray("cterdire", "P001")).toHaveLength(1);
     });
   });
 

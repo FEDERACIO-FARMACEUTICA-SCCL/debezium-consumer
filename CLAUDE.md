@@ -168,7 +168,8 @@ Si solo necesitas añadir una tabla que alimenta entidades existentes (ej: una t
 
 1. Añadir `TableDefinition` a `TABLE_REGISTRY` en `domain/table-registry.ts`
 2. Definir `storeFields` con los campos necesarios para los builders (optimizacion de memoria)
-3. Todos los lookups derivados (`TABLE_MAP`, `WATCHED_FIELDS`, `FIELD_TO_PAYLOADS`, `ALL_TOPICS`) se auto-actualizan
+3. Si la FK a `ctercero` no es `codigo`, definir `keyField` (ej: `keyField: "tercer"` para `cterasoc`)
+4. Todos los lookups derivados (`TABLE_MAP`, `WATCHED_FIELDS`, `FIELD_TO_PAYLOADS`, `ALL_TOPICS`) se auto-actualizan
 
 ## Tests
 
@@ -254,11 +255,12 @@ npm run test:watch    # modo watch (re-ejecuta al guardar)
   - `subscribe()` acepta `{ topics: string[] }`, no `{ topic, fromBeginning }`
 
 ### Table Registry (fuente unica de verdad para tablas)
-- `domain/table-registry.ts` define `TABLE_REGISTRY` con todas las tablas, sus store kinds, watched fields (con mapping campo→payloads), topics y `storeFields`
+- `domain/table-registry.ts` define `TABLE_REGISTRY` con todas las tablas, sus store kinds, watched fields (con mapping campo→payloads), topics, `storeFields` y `keyField`
 - Lookups derivados computados una vez al cargar modulo: `TABLE_MAP`, `WATCHED_FIELDS`, `FIELD_TO_PAYLOADS`, `ALL_TOPICS`
 - `FIELD_TO_PAYLOADS` mapea `"tabla.campo"` → `Set<PayloadType>`, permitiendo granularidad a nivel de campo
 - `storeFields` (opcional): lista de campos a conservar en el store. Los campos no listados se descartan al escribir. Motivacion: Debezium tiene un bug que impide filtrar columnas en origen — siempre envia TODAS las columnas de cada tabla Informix (que puede tener 30+ campos), pero los builders solo necesitan un subconjunto
 - Si se omite `storeFields`, se conservan todos los campos (backward compatible)
+- `keyField` (opcional): campo usado como clave de agrupacion en el store. Default `"codigo"`. Usar cuando la FK a `ctercero` no es `codigo` (ej: `cterasoc` usa `tercer`)
 - Elimina la necesidad de hardcodear nombres de tabla en multiples ficheros
 
 ### Entity Registry (fuente unica de verdad para entidades)
@@ -291,6 +293,7 @@ La decision de que payloads enviar se toma a nivel de **campo**, no de tabla. Ca
 | `gproveed.fecalt` | Si | No | Solo Supplier |
 | `gproveed.fecbaj` | Si | Si | Ambos |
 | `cterdire.*` | No | Si | Solo Contact |
+| `cterasoc.*` | — | — | Sin watched fields (solo almacenamiento en store) |
 
 Resumen por escenario:
 - **Cambio en ctercero** → siempre Supplier + Contact (todos sus campos afectan a ambos)
@@ -454,7 +457,7 @@ Pagina HTML autocontenida servida en `/store` que permite explorar el contenido 
 Funcionalidades de la UI:
 - Stats dashboard con cards por tabla + total, incluyendo **memoria estimada** (bytes en heap V8)
 - Explorador de tabla: selector + lista de codigos (con filtro local)
-- Vista unificada por codigo: carga datos de **todas las tablas** (ctercero + gproveed + cterdire) en un solo panel
+- Vista unificada por codigo: carga datos de **todas las tablas** (ctercero + gproveed + cterdire + cterasoc) en un solo panel
 - Busqueda global: busca substring de codigo en todas las tablas (debounce 300ms en el cliente)
 - JSON syntax highlighting (keys, strings, numbers, booleans, nulls) con tema oscuro
 - Responsive basico (layout vertical en pantallas estrechas)

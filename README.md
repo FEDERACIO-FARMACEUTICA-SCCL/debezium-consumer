@@ -29,7 +29,7 @@ Este consumer **NO se conecta a la base de datos Informix**. Todos los datos que
 
 ### Paso 1: Debezium hace el snapshot inicial
 
-Cuando Debezium arranca por primera vez, lee **todos los registros existentes** de las tablas monitorizadas (`ctercero`, `gproveed`, `cterdire`) y los envia como eventos de tipo snapshot (`op: "r"`) a Kafka. Cada registro de cada tabla se convierte en un mensaje Kafka con todos sus campos.
+Cuando Debezium arranca por primera vez, lee **todos los registros existentes** de las tablas monitorizadas (`ctercero`, `gproveed`, `cterdire`, `cterasoc`) y los envia como eventos de tipo snapshot (`op: "r"`) a Kafka. Cada registro de cada tabla se convierte en un mensaje Kafka con todos sus campos.
 
 Es decir: si `ctercero` tiene 11.000 registros y `gproveed` tiene 7.000, Kafka recibe 18.000 mensajes con la foto completa de ambas tablas.
 
@@ -158,7 +158,7 @@ informix-consumer/
 
 El proyecto tiene dos registries data-driven complementarios:
 
-- **`domain/table-registry.ts`** — define las **tablas** del pipeline CDC: que campos monitorizar, como almacenar en el store, que payload types alimenta cada campo, y que campos conservar en memoria (`storeFields`). Es la fuente de verdad para `store.ts`, `watched-fields.ts`, `message-handler.ts`.
+- **`domain/table-registry.ts`** — define las **tablas** del pipeline CDC: que campos monitorizar, como almacenar en el store, que payload types alimenta cada campo, que campos conservar en memoria (`storeFields`), y que campo usar como clave de agrupacion (`keyField`, default `"codigo"`). Es la fuente de verdad para `store.ts`, `watched-fields.ts`, `message-handler.ts`.
 
 - **`domain/entity-registry.ts`** — define las **entidades** de la capa API/Trigger: tipo, label para logs, ruta HTTP del trigger, endpoint de la API externa, y metadatos Swagger. Es la fuente de verdad para `server.ts`, `schemas.ts`, `dispatcher.ts`, `cdc-debouncer.ts`, `pending-buffer.ts`, `bulk-service.ts`.
 
@@ -294,6 +294,7 @@ Solo se procesan cambios cuando estos campos especificos se modifican. La decisi
 | `cterdire.codpos` | No | Si | Solo Contact |
 | `cterdire.telef1` | No | Si | Solo Contact |
 | `cterdire.email` | No | Si | Solo Contact |
+| `cterasoc.*` | — | — | Sin watched fields (solo almacenamiento en store) |
 
 ### Resumen por escenario
 
@@ -544,7 +545,7 @@ Pagina HTML interactiva para explorar el contenido del `InMemoryStore` sin neces
 2. Introducir el Bearer token (mismo valor de `TRIGGER_API_KEY`)
 3. Click en **Connect** — se cargan las stats y las tablas son navegables
 4. Seleccionar una tabla → aparece la lista de codigos
-5. Click en un codigo → muestra datos de **todas las tablas** (ctercero + gproveed + cterdire) para ese codigo
+5. Click en un codigo → muestra datos de **todas las tablas** (ctercero + gproveed + cterdire + cterasoc) para ese codigo
 
 El token se guarda en `localStorage` entre recargas (mismo patron que Swagger UI).
 
@@ -702,6 +703,7 @@ Los topics siguen el patron `informix.informix.{tabla}` y se derivan automaticam
 | `informix.informix.ctercero` | ctercero |
 | `informix.informix.cterdire` | cterdire |
 | `informix.informix.gproveed` | gproveed |
+| `informix.informix.cterasoc` | cterasoc |
 
 ## Formato de mensajes CDC
 
