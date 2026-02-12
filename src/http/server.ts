@@ -6,6 +6,7 @@ import { logger } from "../logger";
 import { BulkService, BulkOperationInProgressError } from "../bulk/bulk-service";
 import { ENTITY_REGISTRY } from "../domain/entity-registry";
 import { healthSchema, makeTriggerSchema } from "./schemas";
+import { registerStoreViewer } from "./store-viewer";
 
 interface TriggerBody {
   CodSupplier?: string[];
@@ -54,7 +55,7 @@ export async function startServer(opts: ServerOptions): Promise<FastifyInstance>
 
   // 3. Auth hook — skip for /health and /docs*
   app.addHook("onRequest", async (request: FastifyRequest, reply: FastifyReply) => {
-    if (request.url === "/health" || request.url.startsWith("/docs")) return;
+    if (request.url === "/health" || request.url.startsWith("/docs") || request.url === "/store") return;
 
     const auth = request.headers.authorization ?? "";
     const expected = `Bearer ${opts.apiKey}`;
@@ -89,6 +90,9 @@ export async function startServer(opts: ServerOptions): Promise<FastifyInstance>
       return handleBulk(reply, () => opts.bulkService.delete(entity.type, CodSupplier));
     });
   }
+
+  // Store viewer (HTML page + API endpoints)
+  registerStoreViewer(app);
 
   await app.listen({ port: opts.port, host: "0.0.0.0" });
   logger.info({ tag: "HTTP", port: opts.port }, `Trigger server listening on port ${opts.port}`);

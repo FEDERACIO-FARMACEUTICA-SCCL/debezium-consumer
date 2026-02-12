@@ -12,6 +12,7 @@ Informix DB
 Debezium Server  -->  Kafka  -->  [este consumer]  --debounce-->  Ingest API (PUT/DELETE)
                                         |
                                    Trigger API (:3001)  -->  Swagger UI (/docs)
+                                        |                -->  Store Viewer (/store)
                                         |
                                    pino (JSON stdout)
                                         |
@@ -134,7 +135,8 @@ informix-consumer/
     │
     └── http/
         ├── server.ts               # Fastify server: rutas dinamicas desde ENTITY_REGISTRY + Swagger
-        └── schemas.ts              # makeTriggerSchema() factory + schemas compartidos
+        ├── schemas.ts              # makeTriggerSchema() factory + schemas compartidos
+        └── store-viewer.ts         # Store Viewer: endpoints JSON + pagina HTML autocontenida
 ```
 
 ### Capas y responsabilidades
@@ -147,7 +149,7 @@ informix-consumer/
 | **Kafka** | `kafka/` | Infraestructura Kafka pura, snapshot state machine, orquestacion de mensajes |
 | **Dispatch** | `dispatch/` | CDC debounce + aggregation, envio via HTTP (`HttpDispatcher` + `ApiClient`), buffer de reintentos |
 | **Bulk** | `bulk/` | Operaciones bulk para la Trigger API: `BulkHandler` por entidad + `BulkService` generico |
-| **HTTP** | `http/` | Trigger API (Fastify): rutas dinamicas desde entity-registry, Swagger UI, health check |
+| **HTTP** | `http/` | Trigger API (Fastify): rutas dinamicas desde entity-registry, Swagger UI, Store Viewer, health check |
 
 ### Dos registries: tablas vs entidades
 
@@ -508,6 +510,61 @@ Para ejecutar llamadas desde Swagger UI:
 4. Click **Authorize** → el token se guarda en localStorage entre recargas (`persistAuthorization: true`)
 5. Expandir cualquier endpoint y click **Try it out** → **Execute**
 
+## Store Viewer (visor web del store en memoria)
+
+Pagina HTML interactiva para explorar el contenido del `InMemoryStore` sin necesidad de buscar en logs. Accesible en `http://localhost:3001/store`.
+
+### Como usarlo
+
+1. Abrir `http://localhost:3001/store`
+2. Introducir el Bearer token (mismo valor de `TRIGGER_API_KEY`)
+3. Click en **Connect** — se cargan las stats y las tablas son navegables
+4. Seleccionar una tabla → aparece la lista de codigos
+5. Click en un codigo → muestra datos de **todas las tablas** (ctercero + gproveed + cterdire) para ese codigo
+
+El token se guarda en `localStorage` entre recargas (mismo patron que Swagger UI).
+
+### Endpoints JSON
+
+Los datos de la pagina se obtienen via endpoints JSON protegidos con Bearer token. Tambien aparecen en Swagger UI bajo el tag "Store Viewer".
+
+| Metodo | Ruta | Descripcion |
+|---|---|---|
+| `GET` | `/store` | Pagina HTML (sin auth) |
+| `GET` | `/store/api/stats` | Counts por tabla + total |
+| `GET` | `/store/api/tables/:table` | Lista de codigos de una tabla |
+| `GET` | `/store/api/tables/:table/:codigo` | Datos de un registro (single o array segun storeKind) |
+| `GET` | `/store/api/search?q=xxx` | Busqueda de codigos por substring (max 200 resultados) |
+
+**Ejemplos con curl:**
+
+```bash
+# Stats del store
+curl http://localhost:3001/store/api/stats \
+  -H "Authorization: Bearer <TRIGGER_API_KEY>"
+
+# Listar codigos de ctercero
+curl http://localhost:3001/store/api/tables/ctercero \
+  -H "Authorization: Bearer <TRIGGER_API_KEY>"
+
+# Ver datos de un codigo concreto
+curl http://localhost:3001/store/api/tables/ctercero/P01868 \
+  -H "Authorization: Bearer <TRIGGER_API_KEY>"
+
+# Buscar codigos
+curl "http://localhost:3001/store/api/search?q=P018" \
+  -H "Authorization: Bearer <TRIGGER_API_KEY>"
+```
+
+### Funcionalidades de la UI
+
+- **Stats dashboard**: cards con contadores por tabla + total
+- **Explorador de tabla**: selector de tabla + lista de codigos con filtro local
+- **Vista unificada por codigo**: carga ctercero + gproveed + cterdire del mismo codigo en un solo panel
+- **Busqueda global**: busca substring de codigo en todas las tablas
+- **JSON syntax highlighting**: tema oscuro con colores para keys, strings, numbers, booleans, nulls
+- **Refresh manual**: boton para refrescar datos (sin polling automatico)
+
 ## Requisitos previos
 
 El stack de Kafka + Debezium debe estar levantado:
@@ -673,6 +730,7 @@ Nota: los campos `CHAR` de Informix vienen con espacios al final (padding). El c
 3. ~~Documentacion Swagger/OpenAPI auto-generada para la Trigger API~~ ✓
 4. ~~Tests unitarios (Tier 1 + Tier 2)~~ ✓
 5. ~~Refactoring entity-registry para escalabilidad~~ ✓
-6. Manejo de reintentos HTTP y dead letter queue
-7. Filtrado por tipo de operacion si es necesario
-8. Alertas en Grafana (errores sostenidos, pending buffer creciendo)
+6. ~~Store Viewer — visor web del InMemoryStore~~ ✓
+7. Manejo de reintentos HTTP y dead letter queue
+8. Filtrado por tipo de operacion si es necesario
+9. Alertas en Grafana (errores sostenidos, pending buffer creciendo)

@@ -27,6 +27,9 @@ npm run test:watch    # modo watch (re-ejecuta al guardar)
 # Desarrollo local (sin Docker, requiere Kafka accesible en localhost)
 npm run dev
 
+# Store Viewer (visor web del InMemoryStore)
+open http://localhost:3001/store
+
 # Grafana UI
 open http://localhost:3000
 # Dashboard pre-configurado: "Informix Consumer"
@@ -94,6 +97,7 @@ src/
   http/
     server.ts                   # Fastify server: rutas dinamicas desde ENTITY_REGISTRY + Swagger UI + health
     schemas.ts                  # makeTriggerSchema() factory + healthSchema + schemas compartidos
+    store-viewer.ts             # Store Viewer: endpoints JSON + pagina HTML autocontenida
 ```
 
 ### Dos registries: tablas vs entidades
@@ -396,8 +400,33 @@ Ejemplo de respuesta con skips:
 | `/triggers/suppliers` | DELETE | Bearer | `{ CodSupplier?: string[] }` | Delete bulk de suppliers |
 | `/triggers/contacts` | POST | Bearer | `{ CodSupplier?: string[] }` | Sync bulk de contacts |
 | `/triggers/contacts` | DELETE | Bearer | `{ CodSupplier?: string[] }` | Delete bulk de contacts |
+| `/store` | GET | No | — | Store Viewer (pagina HTML interactiva) |
+| `/store/api/stats` | GET | Bearer | — | Stats del store (counts por tabla + total) |
+| `/store/api/tables/:table` | GET | Bearer | — | Lista codigos de una tabla |
+| `/store/api/tables/:table/:codigo` | GET | Bearer | — | Datos de un registro por tabla y codigo |
+| `/store/api/search?q=xxx` | GET | Bearer | — | Busqueda de codigos por substring (max 200 resultados) |
 
 Las rutas `/triggers/*` se generan automaticamente desde `ENTITY_REGISTRY`. Al añadir una nueva entidad al registry, las rutas y schemas Swagger correspondientes se crean sin modificar `server.ts` ni `schemas.ts`.
+
+### Store Viewer (visor web del InMemoryStore)
+
+Pagina HTML autocontenida servida en `/store` que permite explorar el contenido del `InMemoryStore` desde el navegador. Util para diagnosticar datos, verificar registros y depurar problemas sin necesidad de buscar en logs.
+
+- **Implementacion**: `http/store-viewer.ts` — funcion `registerStoreViewer(app)` que registra la pagina HTML + 4 endpoints JSON
+- **Auth**: la pagina HTML (`/store`) se sirve sin auth (igual que `/docs`). Los endpoints de datos (`/store/api/*`) requieren Bearer token
+- **Token persistence**: el token se guarda en `localStorage["store-viewer-token"]` entre recargas (mismo patron que Swagger UI)
+- **Swagger**: los 4 endpoints aparecen en Swagger UI bajo el tag "Store Viewer"
+- **Zero dependencias extra**: HTML + CSS + JS inline, sin librerias frontend, sin ficheros estaticos
+
+Funcionalidades de la UI:
+- Stats dashboard con cards por tabla + total
+- Explorador de tabla: selector + lista de codigos (con filtro local)
+- Vista unificada por codigo: carga datos de **todas las tablas** (ctercero + gproveed + cterdire) en un solo panel
+- Busqueda global: busca substring de codigo en todas las tablas (debounce 300ms en el cliente)
+- JSON syntax highlighting (keys, strings, numbers, booleans, nulls) con tema oscuro
+- Responsive basico (layout vertical en pantallas estrechas)
+
+Acceso: `http://localhost:3001/store`
 
 ### Monitoring (Grafana + Loki + Promtail)
 
@@ -432,6 +461,7 @@ Volumes Docker: `loki-data`, `grafana-data` (persistencia entre reinicios).
 3. ~~Documentacion Swagger/OpenAPI auto-generada para la Trigger API~~ ✓
 4. ~~Tests unitarios (Tier 1 + Tier 2)~~ ✓
 5. ~~Refactoring entity-registry para escalabilidad~~ ✓
-6. Manejo de reintentos HTTP y dead letter queue
-7. Filtrado por tipo de operacion si es necesario
-8. Alertas en Grafana (ej. errores sostenidos, pending buffer creciendo)
+6. ~~Store Viewer — visor web del InMemoryStore~~ ✓
+7. Manejo de reintentos HTTP y dead letter queue
+8. Filtrado por tipo de operacion si es necesario
+9. Alertas en Grafana (ej. errores sostenidos, pending buffer creciendo)

@@ -77,3 +77,126 @@ export function makeTriggerSchema(meta: { summary: string; description: string }
     response: triggerResponses,
   };
 }
+
+// --- Store Viewer schemas ---
+
+const storeViewerSecurity = [{ bearerAuth: [] }];
+
+const storeErrorResponses = {
+  401: { description: "Unauthorized", ...ErrorResponse },
+  404: { description: "Not found", ...ErrorResponse },
+} as const;
+
+export const storeStatsSchema = {
+  tags: ["Store Viewer"],
+  summary: "Get store stats",
+  description: "Returns record counts per table and the total across all tables.",
+  security: storeViewerSecurity,
+  response: {
+    200: {
+      description: "Store statistics",
+      type: "object",
+      properties: {
+        tables: {
+          type: "object",
+          additionalProperties: { type: "number" },
+        },
+        total: { type: "number" },
+      },
+    },
+    401: storeErrorResponses[401],
+  },
+};
+
+export const storeTableSchema = {
+  tags: ["Store Viewer"],
+  summary: "List codigos in a table",
+  description: "Returns all codigos stored for a given table, along with the store kind and count.",
+  security: storeViewerSecurity,
+  params: {
+    type: "object",
+    properties: {
+      table: { type: "string", description: "Table name (e.g. ctercero, gproveed, cterdire)" },
+    },
+    required: ["table"],
+  },
+  response: {
+    200: {
+      description: "Table codigos",
+      type: "object",
+      properties: {
+        table: { type: "string" },
+        storeKind: { type: "string", enum: ["single", "array"] },
+        codigos: { type: "array", items: { type: "string" } },
+        total: { type: "number" },
+      },
+    },
+    ...storeErrorResponses,
+  },
+};
+
+export const storeRecordSchema = {
+  tags: ["Store Viewer"],
+  summary: "Get record by table and codigo",
+  description:
+    "Returns the stored data for a specific codigo in a table. For single-kind tables returns an object (or null). For array-kind tables returns an array.",
+  security: storeViewerSecurity,
+  params: {
+    type: "object",
+    properties: {
+      table: { type: "string", description: "Table name" },
+      codigo: { type: "string", description: "Supplier code" },
+    },
+    required: ["table", "codigo"],
+  },
+  response: {
+    200: {
+      description: "Record data",
+      type: "object",
+      properties: {
+        table: { type: "string" },
+        codigo: { type: "string" },
+        storeKind: { type: "string", enum: ["single", "array"] },
+        data: {},
+      },
+    },
+    ...storeErrorResponses,
+  },
+};
+
+export const storeSearchSchema = {
+  tags: ["Store Viewer"],
+  summary: "Search codigos",
+  description:
+    "Searches for codigos containing the given substring across all tables. Returns up to 200 results.",
+  security: storeViewerSecurity,
+  querystring: {
+    type: "object",
+    properties: {
+      q: { type: "string", description: "Substring to search for in codigos" },
+    },
+    required: ["q"],
+  },
+  response: {
+    200: {
+      description: "Search results",
+      type: "object",
+      properties: {
+        query: { type: "string" },
+        results: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              table: { type: "string" },
+              codigo: { type: "string" },
+            },
+          },
+        },
+        total: { type: "number" },
+      },
+    },
+    400: { description: "Missing query parameter", ...ErrorResponse },
+    401: storeErrorResponses[401],
+  },
+};
