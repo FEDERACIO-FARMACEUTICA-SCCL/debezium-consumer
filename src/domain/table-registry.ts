@@ -20,6 +20,7 @@ export const TABLE_REGISTRY: TableDefinition[] = [
       { field: "codigo", payloads: ["supplier", "contact"] },
       { field: "nombre", payloads: ["supplier", "contact"] },
       { field: "cif", payloads: ["supplier", "contact"] },
+      { field: "codare", payloads: ["supplier", "contact"] },
     ],
     topic: "informix.informix.ctercero",
   },

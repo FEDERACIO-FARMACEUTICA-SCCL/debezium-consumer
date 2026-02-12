@@ -1,6 +1,7 @@
 import { BulkHandler, BulkSyncResult, BulkDeletionResult } from "../bulk-handler";
 import { PayloadRegistry } from "../../payloads/payload-builder";
 import { store } from "../../domain/store";
+import { getAllowedTypes } from "../../domain/codare-registry";
 import { PayloadType, SupplierContact } from "../../types/payloads";
 import { SkippedDetail, SupplierContactDeletion } from "../../types/deletions";
 
@@ -18,6 +19,14 @@ export class ContactBulkHandler implements BulkHandler {
       const ctercero = store.getSingle("ctercero", codigo);
       if (!ctercero) {
         skippedDetails.push({ CodSupplier: codigo, reason: "Not found in store (ctercero)" });
+        continue;
+      }
+      const allowed = getAllowedTypes(ctercero["codare"] as string);
+      if (!allowed.has(this.type)) {
+        skippedDetails.push({
+          CodSupplier: codigo,
+          reason: `codare '${String(ctercero["codare"] ?? "").trim()}' not applicable`,
+        });
         continue;
       }
       const gproveed = store.getSingle("gproveed", codigo);
@@ -50,6 +59,14 @@ export class ContactBulkHandler implements BulkHandler {
       const ctercero = store.getSingle("ctercero", codigo);
       if (!ctercero) {
         skippedDetails.push({ CodSupplier: codigo, reason: "Not found in store (ctercero)" });
+        continue;
+      }
+      const allowed = getAllowedTypes(ctercero["codare"] as string);
+      if (!allowed.has(this.type)) {
+        skippedDetails.push({
+          CodSupplier: codigo,
+          reason: `codare '${String(ctercero["codare"] ?? "").trim()}' not applicable`,
+        });
         continue;
       }
       const nif = ctercero["cif"];

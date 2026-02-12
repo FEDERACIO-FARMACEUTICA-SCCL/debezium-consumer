@@ -18,7 +18,7 @@ import { PayloadType } from "../../types/payloads";
 const mockGetSingle = vi.mocked(store.getSingle);
 const mockGetArray = vi.mocked(store.getArray);
 
-const CTERCERO = { codigo: "P001", nombre: "Acme", cif: "B12345" };
+const CTERCERO = { codigo: "P001", nombre: "Acme", cif: "B12345", codare: "PRO" };
 const GPROVEED = { codigo: "P001", fecalt: 19488, fecbaj: null };
 
 function createMockRegistry() {
@@ -106,6 +106,33 @@ describe("ContactBulkHandler", () => {
 
       expect(result.skippedDetails[0].reason).toBe("Builder returned null");
     });
+
+    it("skips when codare is not applicable (e.g. CLI)", () => {
+      mockGetSingle.mockImplementation((table: string) => {
+        if (table === "ctercero") return { ...CTERCERO, codare: "CLI" };
+        if (table === "gproveed") return GPROVEED;
+        return undefined;
+      });
+
+      const result = handler.syncAll(["P001"]);
+
+      expect(result.items).toHaveLength(0);
+      expect(result.skippedDetails).toEqual([
+        { CodSupplier: "P001", reason: "codare 'CLI' not applicable" },
+      ]);
+    });
+
+    it("skips when codare is null", () => {
+      mockGetSingle.mockImplementation((table: string) => {
+        if (table === "ctercero") return { ...CTERCERO, codare: null };
+        return undefined;
+      });
+
+      const result = handler.syncAll(["P001"]);
+
+      expect(result.items).toHaveLength(0);
+      expect(result.skippedDetails[0].reason).toBe("codare '' not applicable");
+    });
   });
 
   describe("deleteAll", () => {
@@ -153,6 +180,20 @@ describe("ContactBulkHandler", () => {
       const result = handler.deleteAll(["P001"]);
 
       expect(result.skippedDetails[0].reason).toBe("Missing NIF (cif)");
+    });
+
+    it("skips when codare is not applicable", () => {
+      mockGetSingle.mockImplementation((table: string) => {
+        if (table === "ctercero") return { ...CTERCERO, codare: "LAB" };
+        return undefined;
+      });
+
+      const result = handler.deleteAll(["P001"]);
+
+      expect(result.items).toHaveLength(0);
+      expect(result.skippedDetails).toEqual([
+        { CodSupplier: "P001", reason: "codare 'LAB' not applicable" },
+      ]);
     });
   });
 });

@@ -66,6 +66,7 @@ src/
   domain/
     table-registry.ts           # Fuente unica de verdad para TABLAS: watched fields, store kinds, payload mappings
     entity-registry.ts          # Fuente unica de verdad para ENTIDADES: type, label, triggerPath, apiPath, swagger
+    codare-registry.ts          # Filtro de negocio: codare → PayloadType[] (que tipos de tercero disparan cada entidad)
     store.ts                    # Clase InMemoryStore (data-driven desde table-registry)
     watched-fields.ts           # detectChanges() lee WATCHED_FIELDS del table-registry
     country-codes.ts            # Mapping ISO3 → ISO2 para codigos de pais
@@ -113,14 +114,38 @@ Lookups derivados del entity-registry (computados una vez al cargar modulo):
 - `ENTITY_LABELS`: `Record<string, string>` — para logging (`{ supplier: "Supplier", contact: "SupplierContact" }`)
 - `ENTITY_ENDPOINTS`: `Record<string, string>` — para dispatch HTTP (`{ supplier: "/ingest-api/suppliers", ... }`)
 
+### Codare registry (filtro de negocio por tipo de tercero)
+
+`domain/codare-registry.ts` define que valores de `codare` (campo de `ctercero`) habilitan cada `PayloadType`. Las tablas `ctercero`, `gproveed` y `cterdire` contienen distintos tipos de terceros (proveedores, clientes, laboratorios...). Solo los codigos con un `codare` registrado generan payloads.
+
+```typescript
+CODARE_REGISTRY = [
+  { codare: "PRO", payloadTypes: ["supplier", "contact"] },
+  // Futuro: { codare: "LAB", payloadTypes: ["supplier", "contact", "laboratory"] },
+];
+```
+
+- `getAllowedTypes(codare)` → `Set<PayloadType>` (vacio si codare no esta registrado o es null)
+- Usado en dos puntos:
+  1. **`message-handler.ts`** — filtra payloadTypes antes de `debouncer.enqueue()` (CDC en tiempo real)
+  2. **Bulk handlers** (`supplier-handler.ts`, `contact-handler.ts`) — filtra en `syncAll`/`deleteAll` (Trigger API)
+- El store almacena TODOS los registros sin filtrar (el filtro solo afecta al dispatch)
+- Skip reason en bulk: `"codare 'CLI' not applicable"`
+
+Para extender (ej: laboratorios):
+1. Anadir a `CODARE_REGISTRY`: `{ codare: "LAB", payloadTypes: ["supplier", "contact", "laboratory"] }`
+2. Crear entidad `laboratory` siguiendo el patron habitual (entity-registry + builder + handler)
+3. **Zero cambios** en message-handler, bulk-service, debouncer, server, schemas
+
 ### Flujo de datos
 
 1. `kafka/consumer.ts` recibe mensajes y delega a `MessageCallback`
 2. `kafka/message-handler.ts` parsea el envelope Debezium, actualiza el store, consulta el snapshot tracker
 3. Para eventos live CDC: detecta cambios en watched fields, calcula payload types a nivel de campo via `FIELD_TO_PAYLOADS`
-4. `dispatch/cdc-debouncer.ts` acumula `codigo → Set<PayloadType>` en una ventana de tiempo (default 1s)
-5. Al hacer flush: construye payloads desde el store (que ya tiene el estado final), agrupa items por tipo y envia en batches
-6. Si un builder retorna null, el codigo va al `pending-buffer` para reintentos
+4. Filtra payload types por `codare` del registro ctercero (solo codares registrados pasan — `codare-registry.ts`)
+5. `dispatch/cdc-debouncer.ts` acumula `codigo → Set<PayloadType>` en una ventana de tiempo (default 1s)
+6. Al hacer flush: construye payloads desde el store (que ya tiene el estado final), agrupa items por tipo y envia en batches
+7. Si un builder retorna null, el codigo va al `pending-buffer` para reintentos
 
 ### Como añadir una nueva entidad
 
@@ -146,7 +171,7 @@ Si solo necesitas añadir una tabla que alimenta entidades existentes (ej: una t
 
 ## Tests
 
-Suite de tests con **vitest**. **164 tests** en 13 ficheros, ~500ms. Tests colocados junto al codigo fuente como `*.test.ts` (excluidos del build de TypeScript via `tsconfig.json`).
+Suite de tests con **vitest**. **179 tests** en 14 ficheros, ~400ms. Tests colocados junto al codigo fuente como `*.test.ts` (excluidos del build de TypeScript via `tsconfig.json`).
 
 ```bash
 npm test              # ejecutar toda la suite una vez
@@ -168,6 +193,7 @@ npm run test:watch    # modo watch (re-ejecuta al guardar)
 | `domain/watched-fields.test.ts` | `detectChanges` | CREATE/READ/UPDATE/DELETE, whitespace normalization, tabla desconocida, uppercase table |
 | `kafka/snapshot-tracker.test.ts` | `SnapshotTracker` | Estado inicial, transiciones por topic, flag `last`, topics vacios, duplicados |
 | `domain/entity-registry.test.ts` | `ENTITY_REGISTRY`, lookups | Campos requeridos, ENTITY_MAP, ENTITY_LABELS, ENTITY_ENDPOINTS, unicidad |
+| `domain/codare-registry.test.ts` | `CODARE_REGISTRY`, `getAllowedTypes` | PRO mapping, unknown codare, null/undefined, whitespace trim, case-sensitivity |
 
 ### Tier 2 — Logica de negocio (8 ficheros)
 
@@ -362,14 +388,18 @@ Cada `BulkHandler` valida existencia en el store **antes** de llamar al builder 
 | Handler | Metodo | Condicion | Reason |
 |---|---|---|---|
 | `SupplierBulkHandler` | `syncAll` | `ctercero` no existe | `"Not found in store (ctercero)"` |
+| `SupplierBulkHandler` | `syncAll` | codare no aplicable | `"codare 'XXX' not applicable"` |
 | `SupplierBulkHandler` | `syncAll` | `gproveed` no existe | `"Incomplete data: missing gproveed"` |
 | `SupplierBulkHandler` | `syncAll` | builder retorna null | `"Builder returned null"` |
 | `SupplierBulkHandler` | `deleteAll` | `ctercero` no existe | `"Not found in store (ctercero)"` |
+| `SupplierBulkHandler` | `deleteAll` | codare no aplicable | `"codare 'XXX' not applicable"` |
 | `ContactBulkHandler` | `syncAll` | `ctercero` no existe | `"Not found in store (ctercero)"` |
+| `ContactBulkHandler` | `syncAll` | codare no aplicable | `"codare 'XXX' not applicable"` |
 | `ContactBulkHandler` | `syncAll` | `gproveed` no existe | `"Incomplete data: missing gproveed"` |
 | `ContactBulkHandler` | `syncAll` | sin direcciones | `"No addresses found (cterdire)"` |
 | `ContactBulkHandler` | `syncAll` | builder retorna null | `"Builder returned null"` |
 | `ContactBulkHandler` | `deleteAll` | `ctercero` no existe | `"Not found in store (ctercero)"` |
+| `ContactBulkHandler` | `deleteAll` | codare no aplicable | `"codare 'XXX' not applicable"` |
 | `ContactBulkHandler` | `deleteAll` | NIF nulo o vacio | `"Missing NIF (cif)"` |
 
 Ejemplo de respuesta con skips:
