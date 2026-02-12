@@ -531,7 +531,7 @@ Los datos de la pagina se obtienen via endpoints JSON protegidos con Bearer toke
 | Metodo | Ruta | Descripcion |
 |---|---|---|
 | `GET` | `/store` | Pagina HTML (sin auth) |
-| `GET` | `/store/api/stats` | Counts por tabla + total |
+| `GET` | `/store/api/stats` | Counts + memoria estimada por tabla |
 | `GET` | `/store/api/tables/:table` | Lista de codigos de una tabla |
 | `GET` | `/store/api/tables/:table/:codigo` | Datos de un registro (single o array segun storeKind) |
 | `GET` | `/store/api/search?q=xxx` | Busqueda de codigos por substring (max 200 resultados) |
@@ -558,7 +558,7 @@ curl "http://localhost:3001/store/api/search?q=P018" \
 
 ### Funcionalidades de la UI
 
-- **Stats dashboard**: cards con contadores por tabla + total
+- **Stats dashboard**: cards con contadores por tabla + total, incluyendo memoria estimada en heap
 - **Explorador de tabla**: selector de tabla + lista de codigos con filtro local
 - **Vista unificada por codigo**: carga ctercero + gproveed + cterdire del mismo codigo en un solo panel
 - **Busqueda global**: busca substring de codigo en todas las tablas

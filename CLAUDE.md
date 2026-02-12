@@ -401,7 +401,7 @@ Ejemplo de respuesta con skips:
 | `/triggers/contacts` | POST | Bearer | `{ CodSupplier?: string[] }` | Sync bulk de contacts |
 | `/triggers/contacts` | DELETE | Bearer | `{ CodSupplier?: string[] }` | Delete bulk de contacts |
 | `/store` | GET | No | — | Store Viewer (pagina HTML interactiva) |
-| `/store/api/stats` | GET | Bearer | — | Stats del store (counts por tabla + total) |
+| `/store/api/stats` | GET | Bearer | — | Stats del store (counts + memoria estimada por tabla) |
 | `/store/api/tables/:table` | GET | Bearer | — | Lista codigos de una tabla |
 | `/store/api/tables/:table/:codigo` | GET | Bearer | — | Datos de un registro por tabla y codigo |
 | `/store/api/search?q=xxx` | GET | Bearer | — | Busqueda de codigos por substring (max 200 resultados) |
@@ -419,7 +419,7 @@ Pagina HTML autocontenida servida en `/store` que permite explorar el contenido 
 - **Zero dependencias extra**: HTML + CSS + JS inline, sin librerias frontend, sin ficheros estaticos
 
 Funcionalidades de la UI:
-- Stats dashboard con cards por tabla + total
+- Stats dashboard con cards por tabla + total, incluyendo **memoria estimada** (bytes en heap V8)
 - Explorador de tabla: selector + lista de codigos (con filtro local)
 - Vista unificada por codigo: carga datos de **todas las tablas** (ctercero + gproveed + cterdire) en un solo panel
 - Busqueda global: busca substring de codigo en todas las tablas (debounce 300ms en el cliente)

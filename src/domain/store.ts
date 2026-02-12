@@ -71,6 +71,27 @@ export class InMemoryStore {
     return [];
   }
 
+  getMemoryEstimate(): Record<string, number> {
+    const sizes: Record<string, number> = {};
+    for (const [table, map] of this.singleStores) {
+      let bytes = 0;
+      for (const record of map.values()) {
+        bytes += estimateRecordBytes(record);
+      }
+      sizes[table] = bytes;
+    }
+    for (const [table, map] of this.arrayStores) {
+      let bytes = 0;
+      for (const arr of map.values()) {
+        for (const record of arr) {
+          bytes += estimateRecordBytes(record);
+        }
+      }
+      sizes[table] = bytes;
+    }
+    return sizes;
+  }
+
   clear(): void {
     for (const map of this.singleStores.values()) map.clear();
     for (const map of this.arrayStores.values()) map.clear();
@@ -143,6 +164,18 @@ export class InMemoryStore {
     if (typeof val === "string") return val.trim();
     return val;
   }
+}
+
+function estimateRecordBytes(record: StoreRecord): number {
+  let bytes = 64; // object overhead
+  for (const [key, val] of Object.entries(record)) {
+    bytes += key.length * 2 + 32; // key string + property slot
+    if (typeof val === "string") bytes += val.length * 2 + 32;
+    else if (typeof val === "number") bytes += 8;
+    else if (val === null || val === undefined) bytes += 0;
+    else bytes += 32;
+  }
+  return bytes;
 }
 
 // Singleton instance

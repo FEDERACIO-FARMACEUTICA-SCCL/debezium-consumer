@@ -90,7 +90,8 @@ const storeErrorResponses = {
 export const storeStatsSchema = {
   tags: ["Store Viewer"],
   summary: "Get store stats",
-  description: "Returns record counts per table and the total across all tables.",
+  description:
+    "Returns record counts and estimated memory usage (bytes) per table.",
   security: storeViewerSecurity,
   response: {
     200: {
@@ -102,6 +103,15 @@ export const storeStatsSchema = {
           additionalProperties: { type: "number" },
         },
         total: { type: "number" },
+        memory: {
+          type: "object",
+          additionalProperties: { type: "number" },
+          description: "Estimated memory usage in bytes per table",
+        },
+        memoryTotal: {
+          type: "number",
+          description: "Total estimated memory usage in bytes",
+        },
       },
     },
     401: storeErrorResponses[401],

@@ -18,7 +18,9 @@ export function registerStoreViewer(app: FastifyInstance): void {
   app.get("/store/api/stats", { schema: storeStatsSchema }, async () => {
     const stats = store.getStats();
     const total = Object.values(stats).reduce((sum, n) => sum + n, 0);
-    return { tables: stats, total };
+    const memory = store.getMemoryEstimate();
+    const memoryTotal = Object.values(memory).reduce((sum, n) => sum + n, 0);
+    return { tables: stats, total, memory, memoryTotal };
   });
 
   // GET /store/api/tables/:table
@@ -147,6 +149,7 @@ function getStoreViewerHtml(): string {
   }
   .stat-card .label { font-size: 12px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; }
   .stat-card .value { font-size: 28px; font-weight: 600; color: #f0f6fc; margin-top: 4px; }
+  .stat-card .mem { font-size: 12px; color: #8b949e; margin-top: 2px; }
 
   /* Sidebar sections */
   .sidebar-section { padding: 12px; border-bottom: 1px solid #30363d; }
@@ -303,11 +306,14 @@ async function refreshStats() {
     const data = await apiFetch("/store/api/stats");
     let html = '<div class="stats">';
     for (const [table, count] of Object.entries(data.tables)) {
+      var mem = data.memory && data.memory[table] ? data.memory[table] : 0;
       html += '<div class="stat-card"><div class="label">' + esc(table) +
-              '</div><div class="value">' + count + '</div></div>';
+              '</div><div class="value">' + count +
+              '</div><div class="mem">' + formatBytes(mem) + '</div></div>';
     }
+    var totalMem = data.memoryTotal || 0;
     html += '<div class="stat-card"><div class="label">Total</div><div class="value">' +
-            data.total + '</div></div>';
+            data.total + '</div><div class="mem">' + formatBytes(totalMem) + '</div></div>';
     html += '</div>';
     panel.innerHTML = html;
     if (currentTable) selectTable(currentTable);
@@ -460,6 +466,12 @@ function syntaxHighlight(obj) {
     .replace(/: (\\d+\\.?\\d*)(,?)/g, ': <span class="json-number">$1</span>$2')
     .replace(/: (true|false)(,?)/g, ': <span class="json-bool">$1</span>$2')
     .replace(/: (null)(,?)/g, ': <span class="json-null">$1</span>$2');
+}
+
+function formatBytes(b) {
+  if (b < 1024) return b + ' B';
+  if (b < 1024*1024) return (b/1024).toFixed(1) + ' KB';
+  return (b/1024/1024).toFixed(2) + ' MB';
 }
 
 function esc(s) { var d = document.createElement("div"); d.textContent = String(s); return d.innerHTML; }
