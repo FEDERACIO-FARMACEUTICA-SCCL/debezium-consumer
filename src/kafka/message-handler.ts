@@ -11,12 +11,57 @@ import { CdcDebouncer } from "../dispatch/cdc-debouncer";
 import { logger } from "../logger";
 import { MessageCallback } from "./consumer";
 
+export interface MessageHandlerOptions {
+  config: AppConfig;
+  payloadRegistry: PayloadRegistry;
+  snapshotTracker: SnapshotTracker;
+  debouncer: CdcDebouncer;
+  /** If true, we resumed from a snapshot — detect re-snapshots. */
+  resumedFromSnapshot?: boolean;
+  /** Called when a Debezium re-snapshot is detected after resume. */
+  onReSnapshotDetected?: () => void;
+  /** Called once when the store becomes ready (rebuild complete). */
+  onStoreReady?: () => void;
+}
+
+export function createMessageHandler(opts: MessageHandlerOptions): MessageCallback;
+/** @deprecated Use options object overload */
 export function createMessageHandler(
   config: AppConfig,
   payloadRegistry: PayloadRegistry,
   snapshotTracker: SnapshotTracker,
   debouncer: CdcDebouncer
+): MessageCallback;
+export function createMessageHandler(
+  configOrOpts: AppConfig | MessageHandlerOptions,
+  payloadRegistry?: PayloadRegistry,
+  snapshotTracker?: SnapshotTracker,
+  debouncer?: CdcDebouncer
 ): MessageCallback {
+  // Normalize to options object
+  const opts: MessageHandlerOptions =
+    "config" in configOrOpts
+      ? configOrOpts
+      : {
+          config: configOrOpts,
+          payloadRegistry: payloadRegistry!,
+          snapshotTracker: snapshotTracker!,
+          debouncer: debouncer!,
+        };
+
+  const {
+    config,
+    payloadRegistry: registry,
+    snapshotTracker: tracker,
+    debouncer: deb,
+    resumedFromSnapshot,
+    onReSnapshotDetected,
+    onStoreReady,
+  } = opts;
+
+  let reSnapshotHandled = false;
+  let storeReadyFired = false;
+
   return async ({ topic, partition, message }) => {
     if (!message.value) return;
 
@@ -42,18 +87,40 @@ export function createMessageHandler(
       const tableLower = table.toLowerCase();
       const label = OP_LABELS[event.op] ?? event.op;
 
+      // Detect Debezium re-snapshot after resuming from persisted snapshot
+      if (
+        resumedFromSnapshot &&
+        !reSnapshotHandled &&
+        event.op === "r"
+      ) {
+        reSnapshotHandled = true;
+        logger.warn(
+          { tag: "Snapshot", topic },
+          "Debezium re-snapshot detected after resume — clearing store and rebuilding"
+        );
+        store.clear();
+        tracker.reset();
+        onReSnapshotDetected?.();
+      }
+
       // 1. Update in-memory store (always, for all events)
       updateStore(table, event.op, event.before, event.after);
 
       // 2. Snapshot tracking
       const snapshotFlag = String(event.source.snapshot ?? "false");
-      const isLive = snapshotTracker.processEvent(
+      const isLive = tracker.processEvent(
         event.op,
         snapshotFlag,
         topic,
         getStoreStats
       );
       if (!isLive) return;
+
+      // Fire onStoreReady once when transitioning to live mode
+      if (!storeReadyFired) {
+        storeReadyFired = true;
+        onStoreReady?.();
+      }
 
       const timestamp = event.ts_ms
         ? new Date(event.ts_ms).toISOString()
@@ -128,9 +195,11 @@ export function createMessageHandler(
         if (payloadTypes.size === 0) return;
       }
 
-      debouncer.enqueue(codigo, payloadTypes);
+      deb.enqueue(codigo, payloadTypes);
     } catch (err) {
-      logger.error({ tag: "Consumer", topic, err }, "Error processing message");
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error({ tag: "Consumer", topic, error: msg }, "Error processing message");
+      logger.debug({ tag: "Consumer", topic, err }, "Error details");
     }
   };
 }

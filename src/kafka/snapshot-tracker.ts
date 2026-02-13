@@ -6,8 +6,22 @@ export class SnapshotTracker {
   private logCounter = 0;
   private _ready = false;
 
-  constructor(topics: string[]) {
+  constructor(topics: string[], startReady = false) {
     this.allTopics = new Set(topics);
+    if (startReady) {
+      this._ready = true;
+      for (const t of this.allTopics) this.topicsDone.add(t);
+      logger.info(
+        { tag: "StoreRebuild" },
+        "Snapshot tracker starting in ready mode (resumed from snapshot)"
+      );
+    }
+  }
+
+  reset(): void {
+    this._ready = false;
+    this.topicsDone.clear();
+    this.logCounter = 0;
   }
 
   get ready(): boolean {

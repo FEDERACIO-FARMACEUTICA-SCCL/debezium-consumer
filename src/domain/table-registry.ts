@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { PayloadType } from "../types/payloads";
 
 export interface WatchedField {
@@ -62,6 +63,14 @@ export const TABLE_REGISTRY: TableDefinition[] = [
     storeFields: ["seqno", "tipaso", "tercer"],
     keyField: "tercer",
   },
+    {
+    table: "gvenacuh",
+    storeKind: "array",
+    watchedFields: [],
+    topic: "informix.informix.gvenacuh",
+    storeFields: ["tercer", "coment", "cabid", "tipdoc", "fecfin", "fecini", "clasif", "terenv", "impres", "indmod"],
+    keyField: "tercer",
+  },
 ];
 
 // Derived lookups (computed once at module load)
@@ -82,3 +91,18 @@ export const FIELD_TO_PAYLOADS = new Map<string, Set<PayloadType>>(
 );
 
 export const ALL_TOPICS: string[] = TABLE_REGISTRY.map((def) => def.topic);
+
+/** Deterministic hash of the registry structure (tables, storeKind, storeFields, keyField).
+ *  Used to invalidate persisted snapshots when the registry changes. */
+export function computeRegistryHash(
+  definitions: TableDefinition[] = TABLE_REGISTRY
+): string {
+  const data = definitions.map((d) => ({
+    table: d.table,
+    storeKind: d.storeKind,
+    topic: d.topic,
+    storeFields: d.storeFields ?? [],
+    keyField: d.keyField ?? "codigo",
+  }));
+  return createHash("sha256").update(JSON.stringify(data)).digest("hex");
+}

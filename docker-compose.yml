@@ -3,6 +3,7 @@ services:
     container_name: informix-consumer
     build: .
     platform: linux/amd64
+    init: true
     ports:
       - "127.0.0.1:3001:3001"
     deploy:
@@ -14,18 +15,21 @@ services:
       KAFKA_BROKERS: kafka:29092
       KAFKA_GROUP_ID: informix-consumer
       KAFKA_AUTO_OFFSET_RESET: earliest
-#      LOG_LEVEL: info
-      LOG_LEVEL: debug
+      LOG_LEVEL: info
+#      LOG_LEVEL: debug
       INGEST_API_BASE_URL: ${INGEST_API_BASE_URL}
       INGEST_API_USERNAME: ${INGEST_API_USERNAME}
       INGEST_API_PASSWORD: ${INGEST_API_PASSWORD}
       HTTP_ENABLED: "true"
       TRIGGER_API_KEY: ${TRIGGER_API_KEY}
       BULK_BATCH_SIZE: "500"
+      SNAPSHOT_PATH: /app/data/store-snapshot.json
+#      FORCE_REBUILD: "true"
     labels:
       logging: "loki"
     volumes:
       - ./src:/app/src:ro
+      - consumer-data:/app/data
     command: npx tsx --watch src/index.ts
     networks:
       - debezium-network
@@ -92,6 +96,7 @@ services:
     restart: on-failure
 
 volumes:
+  consumer-data:
   loki-data:
   grafana-data:
 

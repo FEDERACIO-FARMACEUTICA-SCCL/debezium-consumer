@@ -24,6 +24,10 @@ export interface AppConfig {
     windowMs: number;
     maxBufferSize: number;
   };
+  snapshot: {
+    path: string;
+    forceRebuild: boolean;
+  };
   logLevel: "info" | "debug";
 }
 
@@ -73,6 +77,10 @@ export function loadConfig(): AppConfig {
     debounce: {
       windowMs: Number(process.env.DEBOUNCE_WINDOW_MS ?? 1000),
       maxBufferSize: Number(process.env.DEBOUNCE_MAX_BUFFER_SIZE ?? 500),
+    },
+    snapshot: {
+      path: process.env.SNAPSHOT_PATH ?? "./data/store-snapshot.json",
+      forceRebuild: process.env.FORCE_REBUILD === "true",
     },
     logLevel: logLevel === "debug" ? "debug" : "info",
   };

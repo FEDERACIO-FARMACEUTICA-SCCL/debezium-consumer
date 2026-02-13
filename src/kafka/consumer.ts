@@ -8,9 +8,23 @@ export type MessageCallback = (params: {
   message: KafkaJS.EachMessagePayload["message"];
 }) => Promise<void>;
 
+export class OffsetTracker {
+  private offsets = new Map<string, string>();
+
+  update(topic: string, partition: number, offset: string): void {
+    this.offsets.set(`${topic}-${partition}`, offset);
+  }
+
+  getAll(): Map<string, string> {
+    return new Map(this.offsets);
+  }
+}
+
 export async function createKafkaConsumer(
   config: AppConfig,
-  onMessage: MessageCallback
+  onMessage: MessageCallback,
+  offsetTracker: OffsetTracker,
+  resumeOffsets?: Map<string, string>
 ) {
   const kafka = new KafkaJS.Kafka({
     kafkaJS: {
@@ -32,14 +46,38 @@ export async function createKafkaConsumer(
   logger.info({ broker: config.kafka.brokers }, "Connected to Kafka");
 
   await consumer.subscribe({ topics: config.kafka.topics });
+
+  const mode = resumeOffsets?.size ? "resume" : "full-rebuild";
   logger.info(
-    { topics: config.kafka.topics, groupId: ephemeralGroupId },
-    "Subscribed to topics (ephemeral group, reads from beginning)"
+    { topics: config.kafka.topics, groupId: ephemeralGroupId, mode },
+    `Subscribed to topics (${mode})`
   );
+
+  const seekDone = new Set<string>();
 
   await consumer.run({
     eachMessage: async ({ topic, partition, message }) => {
+      // Seek logic: skip old messages when resuming from snapshot
+      if (resumeOffsets?.size) {
+        const key = `${topic}-${partition}`;
+        const targetOffset = resumeOffsets.get(key);
+        if (targetOffset && Number(message.offset) <= Number(targetOffset)) {
+          // Seek once per partition to jump past old messages
+          if (!seekDone.has(key)) {
+            seekDone.add(key);
+            const seekTo = String(Number(targetOffset) + 1);
+            consumer.seek({ topic, partition, offset: seekTo });
+            logger.info(
+              { tag: "Consumer", topic, partition, seekTo },
+              "Seeking to saved offset"
+            );
+          }
+          return;
+        }
+      }
+
       await onMessage({ topic, partition, message });
+      offsetTracker.update(topic, partition, message.offset);
     },
   });
 

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { InMemoryStore } from "./store";
-import { TableDefinition } from "./table-registry";
+import { TableDefinition, computeRegistryHash } from "./table-registry";
 
 const miniRegistry: TableDefinition[] = [
   {
@@ -475,5 +475,102 @@ describe("InMemoryStore", () => {
         cterdire: 0,
       });
     });
+  });
+
+  describe("serialize and hydrate", () => {
+    it("round-trips single and array stores", () => {
+      store.update("ctercero", "c", null, { codigo: "P001", nombre: "Acme" });
+      store.update("gproveed", "c", null, { codigo: "P001", fecalt: 100 });
+      store.update("cterdire", "c", null, {
+        codigo: "P001",
+        direcc: "Calle 1",
+      });
+      store.update("cterdire", "c", null, {
+        codigo: "P001",
+        direcc: "Calle 2",
+      });
+
+      const serialized = store.serialize();
+
+      // Create a fresh store and hydrate
+      const fresh = new InMemoryStore(miniRegistry);
+      fresh.hydrate(serialized);
+
+      expect(fresh.getSingle("ctercero", "P001")).toEqual({
+        codigo: "P001",
+        nombre: "Acme",
+      });
+      expect(fresh.getSingle("gproveed", "P001")).toEqual({
+        codigo: "P001",
+        fecalt: 100,
+      });
+      expect(fresh.getArray("cterdire", "P001")).toHaveLength(2);
+    });
+
+    it("serializes empty stores correctly", () => {
+      const serialized = store.serialize();
+
+      expect(serialized.single.ctercero).toEqual({});
+      expect(serialized.array.cterdire).toEqual({});
+    });
+
+    it("hydrate ignores unknown tables", () => {
+      const data = {
+        single: { unknown_table: { X: { id: 1 } } },
+        array: {},
+      };
+
+      // Should not throw
+      store.hydrate(data);
+      expect(store.getSingle("unknown_table", "X")).toBeUndefined();
+    });
+  });
+});
+
+describe("computeRegistryHash", () => {
+  it("returns a hex string", () => {
+    const hash = computeRegistryHash(miniRegistry);
+    expect(hash).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("is deterministic", () => {
+    expect(computeRegistryHash(miniRegistry)).toBe(
+      computeRegistryHash(miniRegistry)
+    );
+  });
+
+  it("changes when a table is added", () => {
+    const extended: TableDefinition[] = [
+      ...miniRegistry,
+      {
+        table: "extra",
+        storeKind: "single",
+        watchedFields: [],
+        topic: "t.extra",
+      },
+    ];
+    expect(computeRegistryHash(miniRegistry)).not.toBe(
+      computeRegistryHash(extended)
+    );
+  });
+
+  it("changes when storeFields change", () => {
+    const a: TableDefinition[] = [
+      { table: "t", storeKind: "single", watchedFields: [], topic: "t.t", storeFields: ["a"] },
+    ];
+    const b: TableDefinition[] = [
+      { table: "t", storeKind: "single", watchedFields: [], topic: "t.t", storeFields: ["a", "b"] },
+    ];
+    expect(computeRegistryHash(a)).not.toBe(computeRegistryHash(b));
+  });
+
+  it("changes when keyField changes", () => {
+    const a: TableDefinition[] = [
+      { table: "t", storeKind: "array", watchedFields: [], topic: "t.t" },
+    ];
+    const b: TableDefinition[] = [
+      { table: "t", storeKind: "array", watchedFields: [], topic: "t.t", keyField: "tercer" },
+    ];
+    expect(computeRegistryHash(a)).not.toBe(computeRegistryHash(b));
   });
 });

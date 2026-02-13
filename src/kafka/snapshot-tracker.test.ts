@@ -126,4 +126,25 @@ describe("SnapshotTracker", () => {
     expect(tracker.ready).toBe(true);
     expect(result).toBe(true);
   });
+
+  it("starts ready when startReady=true", () => {
+    const tracker = new SnapshotTracker(["topicA", "topicB"], true);
+    expect(tracker.ready).toBe(true);
+
+    // Live events should pass through immediately
+    const result = tracker.processEvent("u", "false", "topicA", mockGetStats);
+    expect(result).toBe(true);
+  });
+
+  it("reset() clears ready state", () => {
+    const tracker = new SnapshotTracker(["topicA"], true);
+    expect(tracker.ready).toBe(true);
+
+    tracker.reset();
+    expect(tracker.ready).toBe(false);
+
+    // Should behave like a fresh tracker
+    const result = tracker.processEvent("r", "true", "topicA", mockGetStats);
+    expect(result).toBe(false);
+  });
 });

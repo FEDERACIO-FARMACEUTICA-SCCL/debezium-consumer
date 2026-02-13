@@ -2,6 +2,11 @@ import { TABLE_REGISTRY, TableDefinition } from "./table-registry";
 
 export type StoreRecord = Record<string, unknown>;
 
+export interface SerializedStore {
+  single: Record<string, Record<string, StoreRecord>>;
+  array: Record<string, Record<string, StoreRecord[]>>;
+}
+
 export class InMemoryStore {
   private singleStores = new Map<string, Map<string, StoreRecord>>();
   private arrayStores = new Map<string, Map<string, StoreRecord[]>>();
@@ -106,6 +111,35 @@ export class InMemoryStore {
   clear(): void {
     for (const map of this.singleStores.values()) map.clear();
     for (const map of this.arrayStores.values()) map.clear();
+  }
+
+  serialize(): SerializedStore {
+    const single: Record<string, Record<string, StoreRecord>> = {};
+    for (const [table, map] of this.singleStores) {
+      single[table] = Object.fromEntries(map);
+    }
+    const array: Record<string, Record<string, StoreRecord[]>> = {};
+    for (const [table, map] of this.arrayStores) {
+      array[table] = Object.fromEntries(map);
+    }
+    return { single, array };
+  }
+
+  hydrate(data: SerializedStore): void {
+    for (const [table, records] of Object.entries(data.single)) {
+      const map = this.singleStores.get(table);
+      if (!map) continue;
+      for (const [key, record] of Object.entries(records)) {
+        map.set(key, record);
+      }
+    }
+    for (const [table, records] of Object.entries(data.array)) {
+      const map = this.arrayStores.get(table);
+      if (!map) continue;
+      for (const [key, arr] of Object.entries(records)) {
+        map.set(key, arr);
+      }
+    }
   }
 
   private updateArrayStore(

@@ -28,6 +28,9 @@ npm-debug.log*
 loki-data/
 grafana-data/
 
+# Store snapshot (persistence)
+data/
+
 # Coverage
 coverage/
 

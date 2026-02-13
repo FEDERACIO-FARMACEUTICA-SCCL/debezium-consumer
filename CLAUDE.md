@@ -77,10 +77,13 @@ src/
     supplier.ts                 # SupplierBuilder implements PayloadBuilder
     supplier-contact.ts         # SupplierContactBuilder implements PayloadBuilder
 
+  persistence/
+    snapshot-manager.ts         # Save/load/delete snapshot a disco (store + offsets + registryHash)
+
   kafka/
-    consumer.ts                 # Solo infra Kafka (connect, subscribe, run)
-    snapshot-tracker.ts         # Maquina de estados del snapshot
-    message-handler.ts          # Orquestador eachMessage (wires domain logic)
+    consumer.ts                 # Infra Kafka (connect, subscribe, run, seek, OffsetTracker)
+    snapshot-tracker.ts         # Maquina de estados del snapshot (con startReady y reset)
+    message-handler.ts          # Orquestador eachMessage (con deteccion re-snapshot)
 
   dispatch/
     cdc-debouncer.ts            # Debounce + aggregation de CDCs antes de enviar a la API
@@ -173,7 +176,7 @@ Si solo necesitas añadir una tabla que alimenta entidades existentes (ej: una t
 
 ## Tests
 
-Suite de tests con **vitest**. **184 tests** en 14 ficheros, ~400ms. Tests colocados junto al codigo fuente como `*.test.ts` (excluidos del build de TypeScript via `tsconfig.json`).
+Suite de tests con **vitest**. **207 tests** en 15 ficheros, ~400ms. Tests colocados junto al codigo fuente como `*.test.ts` (excluidos del build de TypeScript via `tsconfig.json`).
 
 ```bash
 npm test              # ejecutar toda la suite una vez
@@ -186,22 +189,23 @@ npm run test:watch    # modo watch (re-ejecuta al guardar)
 - `tsconfig.json` excluye `src/**/*.test.ts` del build
 - `.gitignore` incluye `coverage/`
 
-### Tier 1 — Funciones puras (5 ficheros)
+### Tier 1 — Funciones puras (6 ficheros)
 
 | Fichero test | Modulo bajo test | Que cubre |
 |---|---|---|
 | `payloads/payload-utils.test.ts` | `trimOrNull`, `isActive`, `formatDate` | Null/undefined, whitespace, coercion de tipos, epoch days, ISO strings, fechas invalidas |
 | `domain/country-codes.test.ts` | `toISO2` | ISO3→ISO2, lowercase, passthrough ISO2, null/undefined, codigos desconocidos |
 | `domain/watched-fields.test.ts` | `detectChanges` | CREATE/READ/UPDATE/DELETE, whitespace normalization, tabla desconocida, uppercase table |
-| `kafka/snapshot-tracker.test.ts` | `SnapshotTracker` | Estado inicial, transiciones por topic, flag `last`, topics vacios, duplicados |
+| `kafka/snapshot-tracker.test.ts` | `SnapshotTracker` | Estado inicial, transiciones por topic, flag `last`, topics vacios, duplicados, startReady, reset |
 | `domain/entity-registry.test.ts` | `ENTITY_REGISTRY`, lookups | Campos requeridos, ENTITY_MAP, ENTITY_LABELS, ENTITY_ENDPOINTS, unicidad |
 | `domain/codare-registry.test.ts` | `CODARE_REGISTRY`, `getAllowedTypes` | PRO mapping, unknown codare, null/undefined, whitespace trim, case-sensitivity |
 
-### Tier 2 — Logica de negocio (8 ficheros)
+### Tier 2 — Logica de negocio (9 ficheros)
 
 | Fichero test | Modulo bajo test | Que cubre |
 |---|---|---|
-| `domain/store.test.ts` | `InMemoryStore` | CRUD single/array, deduplicacion, whitespace matching, getStats, getAllCodigos, storeFields filtering, clear |
+| `domain/store.test.ts` | `InMemoryStore` | CRUD single/array, deduplicacion, whitespace matching, getStats, getAllCodigos, storeFields filtering, serialize/hydrate, computeRegistryHash, clear |
+| `persistence/snapshot-manager.test.ts` | `saveSnapshot`, `loadSnapshot`, `deleteSnapshot` | Estructura correcta, directorio padre, hash mismatch, version mismatch, JSON corrupto |
 | `payloads/supplier.test.ts` | `SupplierBuilder` | Build exitoso, datos incompletos, Status ACTIVE/INACTIVE, NIF null, trimming, StartDate |
 | `payloads/supplier-contact.test.ts` | `SupplierContactBuilder` | 1 y N direcciones, datos incompletos, Country ISO3→ISO2, campos null, Status |
 | `dispatch/cdc-debouncer.test.ts` | `CdcDebouncer` | Debounce timer, merge types/codigos, buffer overflow, batching, builder null→pending, dispatcher error, stop() |
@@ -334,9 +338,37 @@ Tag de logging: `"Debounce"`. Queries utiles en Grafana:
 - Capacidad maxima 10.000 entradas; al llegar al limite evicta la mas antigua con `logger.warn`
 - Los dispatch se hacen con `await` + try/catch; un fallo en un tipo no bloquea los demas
 
+### Store snapshot persistence (`persistence/snapshot-manager.ts`)
+- Persiste el `InMemoryStore` + offsets Kafka a disco para evitar replay completo al reiniciar
+- Al arrancar, si hay un snapshot valido, hidrata el store y hace seek a los offsets guardados (~2s vs ~5min)
+- Formato: JSON con `version`, `registryHash`, `timestamp`, `offsets`, `store`
+- Invalidacion automatica: hash del registry no coincide, version distinta, JSON corrupto → descarta y hace rebuild completo
+- Deteccion de re-snapshot: si aparecen eventos `op: "r"` despues de cargar desde snapshot → `store.clear()`, `tracker.reset()`, elimina snapshot
+- `FORCE_REBUILD=true` fuerza rebuild completo (elimina snapshot y lee desde offset 0)
+- Env var `SNAPSHOT_PATH` (default `./data/store-snapshot.json`)
+- Docker: volumen `consumer-data` montado en `/app/data`, Dockerfile crea `/app/data` con `chown node:node`
+- Tag de logging: `"Snapshot"` — visible en Grafana
+- `InMemoryStore.serialize()` / `hydrate()` para serializar/hidratar datos
+- `computeRegistryHash()` en `table-registry.ts` genera hash SHA-256 deterministico del registry
+- `OffsetTracker` en `consumer.ts` registra el offset mas alto procesado por topic-partition
+- `SnapshotTracker` acepta `startReady=true` para arrancar en modo "ready" (skip snapshot detection) y `reset()` para volver a modo rebuild
+
+#### Tres mecanismos de save (redundancia)
+
+El snapshot se guarda en tres momentos para garantizar persistencia:
+
+| Mecanismo | Trigger | Funciona con `--watch`? |
+|---|---|---|
+| `onStoreReady` | Al completar rebuild (primer evento live) | Si |
+| Periodico | Cada 5 minutos (`setInterval`) | Si |
+| Shutdown | SIGTERM/SIGINT en `process.on` | Solo sin `--watch` |
+
+`tsx --watch` (usado en dev) intercepta SIGTERM sin propagarlo al proceso Node, por lo que el handler de shutdown no se ejecuta. Los otros dos mecanismos compensan: el peor caso es reproceesar ~5 min de CDCs (idempotente). En produccion (`node dist/index.js`) los tres mecanismos funcionan.
+
 ### Shutdown graceful
-- `Promise.race` entre el shutdown graceful (stopRetryLoop + debouncer.stop + server.close + consumer.disconnect) y un timeout de 10s
+- `Promise.race` entre el shutdown graceful (stopRetryLoop + debouncer.stop + persistSnapshot + server.close + consumer.disconnect) y un timeout de 10s
 - `debouncer.stop()` hace un flush final para no perder eventos encolados
+- `persistSnapshot()` persiste el store + offsets a disco antes de desconectar
 - Si el timeout gana, se loguea el error y se sale con `exitCode = 1`
 - Evita que un `consumer.disconnect()` bloqueado impida el cierre del proceso
 

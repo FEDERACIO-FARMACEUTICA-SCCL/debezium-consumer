@@ -5,7 +5,7 @@ import { SupplierBuilder } from "./payloads/supplier";
 import { SupplierContactBuilder } from "./payloads/supplier-contact";
 import { SnapshotTracker } from "./kafka/snapshot-tracker";
 import { createMessageHandler } from "./kafka/message-handler";
-import { createKafkaConsumer } from "./kafka/consumer";
+import { createKafkaConsumer, OffsetTracker } from "./kafka/consumer";
 import { HttpDispatcher } from "./dispatch/dispatcher";
 import { ApiClient } from "./dispatch/http-client";
 import { CdcDebouncer } from "./dispatch/cdc-debouncer";
@@ -14,6 +14,13 @@ import { BulkService } from "./bulk/bulk-service";
 import { SupplierBulkHandler } from "./bulk/handlers/supplier-handler";
 import { ContactBulkHandler } from "./bulk/handlers/contact-handler";
 import { startServer } from "./http/server";
+import { computeRegistryHash } from "./domain/table-registry";
+import { store } from "./domain/store";
+import {
+  saveSnapshot,
+  loadSnapshot,
+  deleteSnapshot,
+} from "./persistence/snapshot-manager";
 import type { FastifyInstance } from "fastify";
 
 async function main() {
@@ -56,32 +63,96 @@ async function main() {
     config.bulk.batchSize
   );
 
-  // 6. Snapshot tracker
-  const snapshotTracker = new SnapshotTracker(config.kafka.topics);
+  // 6. Snapshot persistence — try to load
+  const registryHash = computeRegistryHash();
+  let resumeOffsets: Map<string, string> | undefined;
+  let resumedFromSnapshot = false;
 
-  // 7. Message handler
-  const messageHandler = createMessageHandler(
-    config,
-    registry,
-    snapshotTracker,
-    debouncer
+  if (config.snapshot.forceRebuild) {
+    logger.info({ tag: "Snapshot" }, "FORCE_REBUILD=true, skipping snapshot load");
+    deleteSnapshot(config.snapshot.path);
+  } else {
+    const snapshot = loadSnapshot(config.snapshot.path, registryHash);
+    if (snapshot) {
+      store.hydrate(snapshot.store);
+      resumeOffsets = snapshot.offsets;
+      resumedFromSnapshot = true;
+      const stats = store.getStats();
+      logger.info(
+        { tag: "Snapshot", stats },
+        "Store hydrated from snapshot"
+      );
+    }
+  }
+
+  // 7. Offset tracker + snapshot save helper
+  const offsetTracker = new OffsetTracker();
+
+  const persistSnapshot = () => {
+    try {
+      const offsets = offsetTracker.getAll();
+      if (offsets.size > 0) {
+        saveSnapshot(
+          config.snapshot.path,
+          registryHash,
+          offsets,
+          store.serialize()
+        );
+      }
+    } catch (err) {
+      logger.error({ tag: "Snapshot", err }, "Failed to save snapshot");
+    }
+  };
+
+  // 8. Snapshot tracker
+  const snapshotTracker = new SnapshotTracker(
+    config.kafka.topics,
+    resumedFromSnapshot
   );
 
-  // 8. Kafka consumer
-  const consumer = await createKafkaConsumer(config, messageHandler);
+  // 9. Message handler
+  const messageHandler = createMessageHandler({
+    config,
+    payloadRegistry: registry,
+    snapshotTracker,
+    debouncer,
+    resumedFromSnapshot,
+    onReSnapshotDetected: () => {
+      deleteSnapshot(config.snapshot.path);
+    },
+    onStoreReady: () => {
+      persistSnapshot();
+    },
+  });
 
-  // 9. Retry loop for incomplete payloads
+  // 10. Kafka consumer
+  const consumer = await createKafkaConsumer(
+    config,
+    messageHandler,
+    offsetTracker,
+    resumeOffsets
+  );
+
+  // 11. Periodic snapshot save (every 5 min)
+  const SNAPSHOT_INTERVAL_MS = 5 * 60 * 1000;
+  const snapshotInterval = setInterval(() => {
+    if (snapshotTracker.ready) persistSnapshot();
+  }, SNAPSHOT_INTERVAL_MS);
+
+  // 12. Retry loop for incomplete payloads
   startRetryLoop(registry, dispatcher);
 
-  // 10. Graceful shutdown
+  // 13. Graceful shutdown
   const SHUTDOWN_TIMEOUT_MS = 10_000;
   const shutdown = async (signal: string) => {
     logger.info({ signal }, "Received shutdown signal");
+    clearInterval(snapshotInterval);
     let exitCode = 0;
     try {
       const graceful = async () => {
         stopRetryLoop();
         await debouncer.stop();
+        persistSnapshot();
         if (server) await server.close();
         await consumer.disconnect();
         logger.info("Consumer disconnected");
