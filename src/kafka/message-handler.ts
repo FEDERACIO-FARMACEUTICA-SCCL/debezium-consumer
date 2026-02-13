@@ -100,6 +100,7 @@ export function createMessageHandler(
         );
         store.clear();
         tracker.reset();
+        storeReadyFired = false;
         onReSnapshotDetected?.();
       }
 

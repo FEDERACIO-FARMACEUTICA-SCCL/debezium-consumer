@@ -159,13 +159,19 @@ function getStoreViewerHtml(): string {
     border: 1px solid #30363d; background: #0d1117; color: #c9d1d9;
     font-size: 13px; font-family: inherit;
   }
-  .table-tabs { display: flex; gap: 4px; }
-  .table-tab {
-    padding: 4px 10px; border-radius: 4px; border: 1px solid #30363d;
-    background: #0d1117; color: #8b949e; cursor: pointer; font-size: 12px;
-    font-family: inherit;
+  .table-list { display: flex; flex-direction: column; gap: 2px; }
+  .table-item {
+    padding: 6px 10px; border-radius: 6px; border: none;
+    background: transparent; color: #c9d1d9; cursor: pointer; font-size: 13px;
+    font-family: inherit; display: flex; justify-content: space-between; align-items: center;
+    width: 100%; text-align: left;
   }
-  .table-tab.active { background: #238636; border-color: #2ea043; color: #fff; }
+  .table-item:hover { background: #21262d; }
+  .table-item.active { background: #1f6feb33; color: #58a6ff; }
+  .table-item .table-count {
+    font-size: 11px; color: #484f58; font-variant-numeric: tabular-nums;
+  }
+  .table-item.active .table-count { color: #58a6ff99; }
 
   /* Codigo list */
   .codigo-list { flex: 1; overflow-y: auto; }
@@ -250,7 +256,7 @@ function getStoreViewerHtml(): string {
     </div>
     <div class="sidebar-section">
       <h3>Tables</h3>
-      <div class="table-tabs" id="tableTabs"></div>
+      <div class="table-list" id="tableTabs"></div>
     </div>
     <div class="sidebar-section" style="padding-bottom:4px;">
       <input class="search-input" id="codigoFilter" placeholder="Filter codigos..."
@@ -273,6 +279,7 @@ let token = localStorage.getItem("store-viewer-token") || "";
 let currentTable = "";
 let allCodigos = [];
 let currentCodigo = "";
+let tableCounts = {};
 
 // Init
 document.getElementById("tokenInput").value = token;
@@ -316,6 +323,8 @@ async function refreshStats() {
             data.total + '</div><div class="mem">' + formatBytes(totalMem) + '</div></div>';
     html += '</div>';
     panel.innerHTML = html;
+    tableCounts = data.tables;
+    renderTableTabs();
     if (currentTable) selectTable(currentTable);
     else if (TABLES.length) selectTable(TABLES[0]);
   } catch (e) {
@@ -326,14 +335,16 @@ async function refreshStats() {
 function renderTableTabs() {
   const container = document.getElementById("tableTabs");
   container.innerHTML = TABLES.map(function(t) {
-    return '<button class="table-tab" data-table="' + t + '" onclick="selectTable(\\''+t+'\\')\">' + t + '</button>';
+    var count = tableCounts[t];
+    var countHtml = count != null ? '<span class="table-count">' + count + '</span>' : '';
+    return '<button class="table-item' + (t === currentTable ? ' active' : '') + '" data-table="' + t + '" onclick="selectTable(\\''+t+'\\')\">' + t + countHtml + '</button>';
   }).join("");
 }
 
 async function selectTable(table) {
   currentTable = table;
   currentCodigo = "";
-  document.querySelectorAll(".table-tab").forEach(function(el) {
+  document.querySelectorAll(".table-item").forEach(function(el) {
     el.classList.toggle("active", el.dataset.table === table);
   });
   document.getElementById("codigoFilter").value = "";

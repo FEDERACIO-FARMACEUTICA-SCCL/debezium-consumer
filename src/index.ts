@@ -5,7 +5,11 @@ import { SupplierBuilder } from "./payloads/supplier";
 import { SupplierContactBuilder } from "./payloads/supplier-contact";
 import { SnapshotTracker } from "./kafka/snapshot-tracker";
 import { createMessageHandler } from "./kafka/message-handler";
-import { createKafkaConsumer, OffsetTracker } from "./kafka/consumer";
+import {
+  createKafkaConsumer,
+  OffsetTracker,
+  KafkaConsumerHandle,
+} from "./kafka/consumer";
 import { HttpDispatcher } from "./dispatch/dispatcher";
 import { ApiClient } from "./dispatch/http-client";
 import { CdcDebouncer } from "./dispatch/cdc-debouncer";
@@ -111,6 +115,9 @@ async function main() {
   );
 
   // 9. Message handler
+  // Use mutable ref so onReSnapshotDetected can call seekAllToBeginning()
+  let kafkaConsumer: KafkaConsumerHandle | null = null;
+
   const messageHandler = createMessageHandler({
     config,
     payloadRegistry: registry,
@@ -119,19 +126,24 @@ async function main() {
     resumedFromSnapshot,
     onReSnapshotDetected: () => {
       deleteSnapshot(config.snapshot.path);
+      kafkaConsumer?.seekAllToBeginning();
     },
     onStoreReady: () => {
-      persistSnapshot();
+      // Delay to allow remaining snapshot events across all topics to drain.
+      // The tracker fires onStoreReady when "snapshot: last" arrives, but
+      // events from other topics may still be pending in Kafka.
+      setTimeout(() => persistSnapshot(), 30_000);
     },
   });
 
   // 10. Kafka consumer
-  const consumer = await createKafkaConsumer(
+  kafkaConsumer = await createKafkaConsumer(
     config,
     messageHandler,
     offsetTracker,
     resumeOffsets
   );
+  const consumer = kafkaConsumer;
 
   // 11. Periodic snapshot save (every 5 min)
   const SNAPSHOT_INTERVAL_MS = 5 * 60 * 1000;

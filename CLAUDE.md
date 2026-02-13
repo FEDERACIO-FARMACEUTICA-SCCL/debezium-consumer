@@ -343,7 +343,8 @@ Tag de logging: `"Debounce"`. Queries utiles en Grafana:
 - Al arrancar, si hay un snapshot valido, hidrata el store y hace seek a los offsets guardados (~2s vs ~5min)
 - Formato: JSON con `version`, `registryHash`, `timestamp`, `offsets`, `store`
 - Invalidacion automatica: hash del registry no coincide, version distinta, JSON corrupto → descarta y hace rebuild completo
-- Deteccion de re-snapshot: si aparecen eventos `op: "r"` despues de cargar desde snapshot → `store.clear()`, `tracker.reset()`, elimina snapshot
+- Deteccion de re-snapshot: si aparecen eventos `op: "r"` despues de cargar desde snapshot → `store.clear()`, `tracker.reset()`, `storeReadyFired = false`, elimina snapshot, y `seekAllToBeginning()` para leer desde offset 0 (sin esto el consumer se queda colgado leyendo datos parciales)
+- `KafkaConsumerHandle` en `consumer.ts`: interfaz que expone `disconnect()` y `seekAllToBeginning()` (limpia resumeOffsets + seekDone + seek offset 0 en todos los topics)
 - `FORCE_REBUILD=true` fuerza rebuild completo (elimina snapshot y lee desde offset 0)
 - Env var `SNAPSHOT_PATH` (default `./data/store-snapshot.json`)
 - Docker: volumen `consumer-data` montado en `/app/data`, Dockerfile crea `/app/data` con `chown node:node`
@@ -359,11 +360,15 @@ El snapshot se guarda en tres momentos para garantizar persistencia:
 
 | Mecanismo | Trigger | Funciona con `--watch`? |
 |---|---|---|
-| `onStoreReady` | Al completar rebuild (primer evento live) | Si |
+| `onStoreReady` | 30s despues de completar rebuild (delay para drenar eventos pendientes) | Si |
 | Periodico | Cada 5 minutos (`setInterval`) | Si |
 | Shutdown | SIGTERM/SIGINT en `process.on` | Solo sin `--watch` |
 
 `tsx --watch` (usado en dev) intercepta SIGTERM sin propagarlo al proceso Node, por lo que el handler de shutdown no se ejecuta. Los otros dos mecanismos compensan: el peor caso es reproceesar ~5 min de CDCs (idempotente). En produccion (`node dist/index.js`) los tres mecanismos funcionan.
+
+**Nota importante**: `onStoreReady` tiene un delay de 30s porque el `SnapshotTracker` detecta el fin del snapshot cuando recibe `snapshot: "last"` en UN topic, pero el consumer lee de multiples topics en paralelo y puede que aun no haya consumido todos los eventos `op: "r"` de los demas topics. Sin el delay, el snapshot se guarda con datos incompletos y al reiniciar se detecta un falso re-snapshot.
+
+**Offset out of range**: Si los topics de Kafka se recrean/purgan (ej: reinicio de Debezium), los offsets guardados ya no existen. El consumer entra en un bucle infinito de seek. Solucion manual: `docker exec informix-consumer rm -f /app/data/store-snapshot.json && docker compose restart consumer`.
 
 ### Shutdown graceful
 - `Promise.race` entre el shutdown graceful (stopRetryLoop + debouncer.stop + persistSnapshot + server.close + consumer.disconnect) y un timeout de 10s

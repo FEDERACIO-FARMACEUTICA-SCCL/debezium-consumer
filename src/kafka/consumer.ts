@@ -20,12 +20,18 @@ export class OffsetTracker {
   }
 }
 
+export interface KafkaConsumerHandle {
+  disconnect(): Promise<void>;
+  /** Seek all topic-partitions to offset 0 and clear resume state. */
+  seekAllToBeginning(): void;
+}
+
 export async function createKafkaConsumer(
   config: AppConfig,
   onMessage: MessageCallback,
   offsetTracker: OffsetTracker,
   resumeOffsets?: Map<string, string>
-) {
+): Promise<KafkaConsumerHandle> {
   const kafka = new KafkaJS.Kafka({
     kafkaJS: {
       brokers: [config.kafka.brokers],
@@ -81,5 +87,18 @@ export async function createKafkaConsumer(
     },
   });
 
-  return consumer;
+  return {
+    disconnect: () => consumer.disconnect(),
+    seekAllToBeginning: () => {
+      resumeOffsets?.clear();
+      seekDone.clear();
+      for (const topic of config.kafka.topics) {
+        consumer.seek({ topic, partition: 0, offset: "0" });
+      }
+      logger.info(
+        { tag: "Consumer", topics: config.kafka.topics },
+        "Seeking all topics to offset 0 for full rebuild"
+      );
+    },
+  };
 }
