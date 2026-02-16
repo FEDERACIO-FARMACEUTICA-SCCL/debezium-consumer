@@ -9,6 +9,13 @@ const CODARE_MAP = new Map<string, Set<PayloadType>>(
   CODARE_REGISTRY.map((r) => [r.codare, new Set(r.payloadTypes)])
 );
 
+/** Payload types exempt from codare filtering (dispatched for all terceros). */
+export const CODARE_EXEMPT: Set<PayloadType> = new Set(["agreement"]);
+
+export function isCodareExempt(type: PayloadType): boolean {
+  return CODARE_EXEMPT.has(type);
+}
+
 export function getAllowedTypes(
   codare: string | null | undefined
 ): Set<PayloadType> {

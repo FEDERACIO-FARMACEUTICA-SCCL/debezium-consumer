@@ -19,6 +19,31 @@ export interface SupplierContact {
   Status: string | null;
 }
 
-export type PayloadType = "supplier" | "contact";
+export interface Agreement {
+  Agreement: string;
+  ChargeApply: number;
+  ChargeValue: number;
+  CodAgreement: string;
+  CodType: string;
+  DateEnd: string | null;
+  DateStart: string | null;
+  DelayDays: number;
+  IdAgreementType: number;
+  CodAgreement_Parent: string | null;
+  IdBasePriceType: string;
+  IdClient: string;
+  IdLiquidation_Type: number;
+  CodSupplier: string;
+  IdTransfer: number;
+  LockEnd: string | null;
+  LockStart: string | null;
+  NetCharge: number;
+  Observations: string | null;
+  PrintedChar: string;
+  Updatable: number;
+  UpdateRates: number;
+}
 
-export type AnyPayload = Supplier[] | SupplierContact[];
+export type PayloadType = "supplier" | "contact" | "agreement";
+
+export type AnyPayload = Supplier[] | SupplierContact[] | Agreement[];

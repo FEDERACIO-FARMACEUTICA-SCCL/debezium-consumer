@@ -66,9 +66,20 @@ export const TABLE_REGISTRY: TableDefinition[] = [
     {
     table: "gvenacuh",
     storeKind: "array",
-    watchedFields: [],
+    watchedFields: [
+      { field: "coment", payloads: ["agreement"] },
+      { field: "cabid", payloads: ["agreement"] },
+      { field: "tipdoc", payloads: ["agreement"] },
+      { field: "fecfin", payloads: ["agreement"] },
+      { field: "fecini", payloads: ["agreement"] },
+      { field: "clasif", payloads: ["agreement"] },
+      { field: "terenv", payloads: ["agreement"] },
+      { field: "impres", payloads: ["agreement"] },
+      { field: "indmod", payloads: ["agreement"] },
+      { field: "frmpag", payloads: ["agreement"] },
+    ],
     topic: "informix.informix.gvenacuh",
-    storeFields: ["tercer", "coment", "cabid", "tipdoc", "fecfin", "fecini", "clasif", "terenv", "impres", "indmod"],
+    storeFields: ["tercer", "coment", "cabid", "tipdoc", "fecfin", "fecini", "clasif", "terenv", "impres", "frmpag", "indmod"],
     keyField: "tercer",
   },
 ];

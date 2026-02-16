@@ -3,6 +3,7 @@ import { initLogger, logger } from "./logger";
 import { PayloadRegistry } from "./payloads/payload-builder";
 import { SupplierBuilder } from "./payloads/supplier";
 import { SupplierContactBuilder } from "./payloads/supplier-contact";
+import { AgreementBuilder } from "./payloads/agreement";
 import { SnapshotTracker } from "./kafka/snapshot-tracker";
 import { createMessageHandler } from "./kafka/message-handler";
 import { createKafkaConsumer, KafkaConsumerHandle } from "./kafka/consumer";
@@ -13,6 +14,7 @@ import { startRetryLoop, stopRetryLoop } from "./dispatch/pending-buffer";
 import { BulkService } from "./bulk/bulk-service";
 import { SupplierBulkHandler } from "./bulk/handlers/supplier-handler";
 import { ContactBulkHandler } from "./bulk/handlers/contact-handler";
+import { AgreementBulkHandler } from "./bulk/handlers/agreement-handler";
 import { startServer } from "./http/server";
 import { computeRegistryHash } from "./domain/table-registry";
 import { initStore, store } from "./domain/store";
@@ -58,6 +60,7 @@ async function main() {
   const registry = new PayloadRegistry();
   registry.register(new SupplierBuilder());
   registry.register(new SupplierContactBuilder());
+  registry.register(new AgreementBuilder());
 
   // 5. API client + Dispatcher
   const apiClient = new ApiClient(config.api);
@@ -69,6 +72,7 @@ async function main() {
     const bulkService = new BulkService(apiClient, config.bulk.batchSize);
     bulkService.registerHandler(new SupplierBulkHandler(registry));
     bulkService.registerHandler(new ContactBulkHandler(registry));
+    bulkService.registerHandler(new AgreementBulkHandler(registry));
     server = await startServer({
       port: config.http.port,
       apiKey: config.http.apiKey,

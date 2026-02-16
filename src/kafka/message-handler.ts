@@ -1,9 +1,9 @@
 import { AppConfig } from "../config";
 import { DebeziumEvent, OP_LABELS } from "../types/debezium";
-import { FIELD_TO_PAYLOADS } from "../domain/table-registry";
+import { FIELD_TO_PAYLOADS, TABLE_MAP } from "../domain/table-registry";
 import { PayloadType } from "../types/payloads";
 import { updateStore, getStoreStats, store } from "../domain/store";
-import { getAllowedTypes } from "../domain/codare-registry";
+import { getAllowedTypes, isCodareExempt } from "../domain/codare-registry";
 import { detectChanges } from "../domain/watched-fields";
 import { PayloadRegistry } from "../payloads/payload-builder";
 import { SnapshotTracker } from "./snapshot-tracker";
@@ -167,12 +167,14 @@ export function createMessageHandler(
 
       // 4. Extract codigo and build payloads (data-driven)
       const record = event.after ?? event.before;
-      const codigo = String(record?.["codigo"] ?? "").trim();
+      const tableDef = TABLE_MAP.get(tableLower);
+      const keyFieldName = tableDef?.keyField ?? "codigo";
+      const codigo = String(record?.[keyFieldName] ?? "").trim();
 
       if (!codigo) {
         logger.debug(
-          { tag: "CDC", table },
-          "No 'codigo' found in event, skipping payload build"
+          { tag: "CDC", table, keyField: keyFieldName },
+          "No key found in event, skipping payload build"
         );
         return;
       }
@@ -187,11 +189,12 @@ export function createMessageHandler(
       if (payloadTypes.size === 0) return;
 
       // Filter by codare (business type) — only allowed types pass through
+      // Codare-exempt types (e.g. agreement) skip this filter entirely
       const cterceroRec = store.getSingle("ctercero", codigo);
       if (cterceroRec) {
         const allowed = getAllowedTypes(cterceroRec["codare"] as string);
         for (const t of [...payloadTypes]) {
-          if (!allowed.has(t)) payloadTypes.delete(t);
+          if (!isCodareExempt(t) && !allowed.has(t)) payloadTypes.delete(t);
         }
         if (payloadTypes.size === 0) return;
       }

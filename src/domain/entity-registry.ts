@@ -48,6 +48,24 @@ export const ENTITY_REGISTRY: EntityDefinition[] = [
       },
     },
   },
+  {
+    type: "agreement",
+    label: "Agreement",
+    triggerPath: "agreements",
+    apiPath: "/ingest-api/agreements",
+    swagger: {
+      sync: {
+        summary: "Bulk sync agreements",
+        description:
+          "Reads all agreements from the store, builds payloads and sends them to the ingest API in batches.",
+      },
+      delete: {
+        summary: "Bulk delete agreements",
+        description:
+          "Sends a deletion payload for every agreement in the store to the ingest API.",
+      },
+    },
+  },
 ];
 
 export const ENTITY_MAP = new Map(

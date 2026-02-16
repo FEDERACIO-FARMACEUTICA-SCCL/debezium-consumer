@@ -9,6 +9,11 @@ export interface SupplierContactDeletion {
   DeletionDate?: string | null;
 }
 
+export interface AgreementDeletion {
+  CodAgreement: string;
+  DeletionDate?: string | null;
+}
+
 export interface SkippedDetail {
   CodSupplier: string;
   reason: string;
