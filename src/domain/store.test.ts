@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach } from "vitest";
-import { InMemoryStore } from "./store";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { SqliteStore } from "./sqlite-store";
 import { TableDefinition, computeRegistryHash } from "./table-registry";
 
 const miniRegistry: TableDefinition[] = [
@@ -51,11 +51,15 @@ const filteredRegistry: TableDefinition[] = [
   },
 ];
 
-describe("InMemoryStore", () => {
-  let store: InMemoryStore;
+describe("SqliteStore", () => {
+  let store: SqliteStore;
 
   beforeEach(() => {
-    store = new InMemoryStore(miniRegistry);
+    store = new SqliteStore(":memory:", miniRegistry);
+  });
+
+  afterEach(() => {
+    store.close();
   });
 
   describe("single store CRUD", () => {
@@ -308,10 +312,14 @@ describe("InMemoryStore", () => {
   });
 
   describe("storeFields filtering", () => {
-    let filtered: InMemoryStore;
+    let filtered: SqliteStore;
 
     beforeEach(() => {
-      filtered = new InMemoryStore(filteredRegistry);
+      filtered = new SqliteStore(":memory:", filteredRegistry);
+    });
+
+    afterEach(() => {
+      filtered.close();
     });
 
     it("keeps only declared fields on single store create", () => {
@@ -391,10 +399,14 @@ describe("InMemoryStore", () => {
   });
 
   describe("custom keyField", () => {
-    let customStore: InMemoryStore;
+    let customStore: SqliteStore;
 
     beforeEach(() => {
-      customStore = new InMemoryStore(customKeyRegistry);
+      customStore = new SqliteStore(":memory:", customKeyRegistry);
+    });
+
+    afterEach(() => {
+      customStore.close();
     });
 
     it("uses custom keyField for array store create", () => {
@@ -477,52 +489,88 @@ describe("InMemoryStore", () => {
     });
   });
 
-  describe("serialize and hydrate", () => {
-    it("round-trips single and array stores", () => {
-      store.update("ctercero", "c", null, { codigo: "P001", nombre: "Acme" });
-      store.update("gproveed", "c", null, { codigo: "P001", fecalt: 100 });
-      store.update("cterdire", "c", null, {
-        codigo: "P001",
-        direcc: "Calle 1",
-      });
-      store.update("cterdire", "c", null, {
-        codigo: "P001",
-        direcc: "Calle 2",
-      });
+  describe("offsets", () => {
+    it("stores and retrieves offsets", () => {
+      store.setOffset("topic-a-0", "100");
+      store.setOffset("topic-b-0", "200");
 
-      const serialized = store.serialize();
-
-      // Create a fresh store and hydrate
-      const fresh = new InMemoryStore(miniRegistry);
-      fresh.hydrate(serialized);
-
-      expect(fresh.getSingle("ctercero", "P001")).toEqual({
-        codigo: "P001",
-        nombre: "Acme",
-      });
-      expect(fresh.getSingle("gproveed", "P001")).toEqual({
-        codigo: "P001",
-        fecalt: 100,
-      });
-      expect(fresh.getArray("cterdire", "P001")).toHaveLength(2);
+      const offsets = store.getAllOffsets();
+      expect(offsets.get("topic-a-0")).toBe("100");
+      expect(offsets.get("topic-b-0")).toBe("200");
+      expect(offsets.size).toBe(2);
     });
 
-    it("serializes empty stores correctly", () => {
-      const serialized = store.serialize();
+    it("updates existing offset", () => {
+      store.setOffset("topic-a-0", "100");
+      store.setOffset("topic-a-0", "150");
 
-      expect(serialized.single.ctercero).toEqual({});
-      expect(serialized.array.cterdire).toEqual({});
+      const offsets = store.getAllOffsets();
+      expect(offsets.get("topic-a-0")).toBe("150");
+      expect(offsets.size).toBe(1);
     });
 
-    it("hydrate ignores unknown tables", () => {
-      const data = {
-        single: { unknown_table: { X: { id: 1 } } },
-        array: {},
-      };
+    it("clears offsets", () => {
+      store.setOffset("topic-a-0", "100");
+      store.setOffset("topic-b-0", "200");
 
-      // Should not throw
-      store.hydrate(data);
-      expect(store.getSingle("unknown_table", "X")).toBeUndefined();
+      store.clearOffsets();
+
+      expect(store.getAllOffsets().size).toBe(0);
+    });
+
+    it("clear() also clears offsets", () => {
+      store.setOffset("topic-a-0", "100");
+      store.update("ctercero", "c", null, { codigo: "P001" });
+
+      store.clear();
+
+      expect(store.getAllOffsets().size).toBe(0);
+      expect(store.getAllCodigos("ctercero")).toEqual([]);
+    });
+  });
+
+  describe("registry hash", () => {
+    it("stores and retrieves registry hash", () => {
+      store.setRegistryHash("abc123");
+
+      expect(store.getRegistryHash()).toBe("abc123");
+    });
+
+    it("returns null when no hash stored", () => {
+      expect(store.getRegistryHash()).toBeNull();
+    });
+
+    it("updates existing hash", () => {
+      store.setRegistryHash("abc123");
+      store.setRegistryHash("def456");
+
+      expect(store.getRegistryHash()).toBe("def456");
+    });
+
+    it("registry hash survives clear()", () => {
+      store.setRegistryHash("abc123");
+      store.clear();
+
+      expect(store.getRegistryHash()).toBe("abc123");
+    });
+  });
+
+  describe("getDiskStats", () => {
+    it("returns disk statistics", () => {
+      const stats = store.getDiskStats();
+      expect(stats.pageCount).toBeGreaterThan(0);
+      expect(stats.pageSize).toBeGreaterThan(0);
+      expect(stats.fileSizeBytes).toBeGreaterThan(0);
+    });
+  });
+
+  describe("close", () => {
+    it("closes the database", () => {
+      const s = new SqliteStore(":memory:", miniRegistry);
+      s.close();
+
+      // After close, operations should throw
+      expect(() => s.getSingle("ctercero", "P001")).toThrow();
     });
   });
 });

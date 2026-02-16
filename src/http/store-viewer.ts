@@ -18,9 +18,8 @@ export function registerStoreViewer(app: FastifyInstance): void {
   app.get("/store/api/stats", { schema: storeStatsSchema }, async () => {
     const stats = store.getStats();
     const total = Object.values(stats).reduce((sum, n) => sum + n, 0);
-    const memory = store.getMemoryEstimate();
-    const memoryTotal = Object.values(memory).reduce((sum, n) => sum + n, 0);
-    return { tables: stats, total, memory, memoryTotal };
+    const disk = store.getDiskStats();
+    return { tables: stats, total, disk };
   });
 
   // GET /store/api/tables/:table
@@ -313,14 +312,12 @@ async function refreshStats() {
     const data = await apiFetch("/store/api/stats");
     let html = '<div class="stats">';
     for (const [table, count] of Object.entries(data.tables)) {
-      var mem = data.memory && data.memory[table] ? data.memory[table] : 0;
       html += '<div class="stat-card"><div class="label">' + esc(table) +
-              '</div><div class="value">' + count +
-              '</div><div class="mem">' + formatBytes(mem) + '</div></div>';
+              '</div><div class="value">' + count + '</div></div>';
     }
-    var totalMem = data.memoryTotal || 0;
+    var diskSize = data.disk ? data.disk.fileSizeBytes : 0;
     html += '<div class="stat-card"><div class="label">Total</div><div class="value">' +
-            data.total + '</div><div class="mem">' + formatBytes(totalMem) + '</div></div>';
+            data.total + '</div><div class="mem">DB: ' + formatBytes(diskSize) + '</div></div>';
     html += '</div>';
     panel.innerHTML = html;
     tableCounts = data.tables;

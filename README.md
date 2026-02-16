@@ -33,27 +33,27 @@ Cuando Debezium arranca por primera vez, lee **todos los registros existentes** 
 
 Es decir: si `ctercero` tiene 11.000 registros y `gproveed` tiene 7.000, Kafka recibe 18.000 mensajes con la foto completa de ambas tablas.
 
-### Paso 2: El consumer reconstruye los datos en memoria
+### Paso 2: El consumer reconstruye los datos en SQLite
 
-Cada vez que el consumer arranca, reconstruye el InMemoryStore leyendo mensajes de Kafka. Si existe un snapshot en disco (ver seccion "Store snapshot persistence"), el consumer **carga el store desde fichero y hace seek** al ultimo offset procesado, evitando re-leer todo el historico. Si no hay snapshot (primer arranque o snapshot invalidado), lee **todos los mensajes desde el principio** (offset 0). Con cada mensaje:
+Cada vez que el consumer arranca, comprueba si existe una base de datos SQLite con datos previos. Si hay offsets guardados (arranque normal), hace `seek` en Kafka al ultimo offset procesado y continua desde ahi (~2s). Si no hay datos (primer arranque o store invalidado), lee **todos los mensajes desde el principio** (offset 0). Con cada mensaje:
 
-- Si es de `ctercero` --> lo guarda en un Map en memoria con clave `codigo`
-- Si es de `gproveed` --> lo guarda en otro Map en memoria con clave `codigo`
+- Si es de `ctercero` --> lo guarda en SQLite con clave `codigo`
+- Si es de `gproveed` --> lo guarda en SQLite con clave `codigo`
 
-Al terminar de re-leer todo el historico, el consumer tiene una **copia en memoria** de las tablas relevantes, equivalente a hacer un `SELECT * FROM ctercero` y `SELECT * FROM gproveed`.
+Al terminar de re-leer todo el historico, el consumer tiene una **copia persistente** de las tablas relevantes en SQLite, equivalente a hacer un `SELECT * FROM ctercero` y `SELECT * FROM gproveed`.
 
-**Optimizacion de memoria (`storeFields`)**: Debezium tiene un bug que impide filtrar columnas en origen — siempre envia TODAS las columnas de cada tabla Informix (que puede tener 30+ campos). Para evitar almacenar campos innecesarios, cada tabla en el registry declara `storeFields`: la lista de campos a conservar. Los campos no listados se descartan al escribir en el store (`pickFields()`). Ejemplo: `ctercero` solo conserva `codigo`, `nombre`, `cif` y `codare` de los 30+ campos que envia Debezium.
+**Optimizacion de almacenamiento (`storeFields`)**: Debezium tiene un bug que impide filtrar columnas en origen — siempre envia TODAS las columnas de cada tabla Informix (que puede tener 30+ campos). Para evitar almacenar campos innecesarios, cada tabla en el registry declara `storeFields`: la lista de campos a conservar. Los campos no listados se descartan al escribir en el store (`pickFields()`). Ejemplo: `ctercero` solo conserva `codigo`, `nombre`, `cif` y `codare` de los 30+ campos que envia Debezium.
 
 ```
-Kafka (historico completo)          In-memory Store
+Kafka (historico completo)          SQLite Store (store.db)
 +----------------------------+      +---------------------------+
-| snapshot ctercero reg 1    | ---> | cterceroStore.set("P001") |
-| snapshot ctercero reg 2    | ---> | cterceroStore.set("P002") |
-| ...                        |      | ...                       |
-| snapshot gproveed reg 1    | ---> | gproveedStore.set("P001") |
-| ...                        |      | ...                       |
-| CDC: update ctercero P001  | ---> | cterceroStore.set("P001") | (sobreescribe)
-+----------------------------+      +---------------------------+
+| snapshot ctercero reg 1    | ---> | single_store: ctercero/P001 |
+| snapshot ctercero reg 2    | ---> | single_store: ctercero/P002 |
+| ...                        |      | ...                         |
+| snapshot gproveed reg 1    | ---> | single_store: gproveed/P001 |
+| ...                        |      | ...                         |
+| CDC: update ctercero P001  | ---> | single_store: ctercero/P001 | (upsert)
++----------------------------+      +-----------------------------+
 ```
 
 ### Paso 3: Cambios en tiempo real
@@ -108,7 +108,8 @@ informix-consumer/
     │   ├── table-registry.ts        # Fuente unica de verdad para TABLAS, mappings CDC y storeFields
     │   ├── entity-registry.ts       # Fuente unica de verdad para ENTIDADES (API, triggers, labels)
     │   ├── codare-registry.ts       # Filtro de negocio: codare → PayloadType[] (que terceros disparan cada entidad)
-    │   ├── store.ts                 # InMemoryStore data-driven desde table-registry (con filtrado de campos)
+    │   ├── sqlite-store.ts          # SqliteStore (better-sqlite3, persistente, data-driven desde table-registry)
+    │   ├── store.ts                 # Singleton mutable del SqliteStore + convenience wrappers
     │   ├── watched-fields.ts        # Deteccion de cambios en campos monitorizados
     │   └── country-codes.ts         # Mapping ISO3 → ISO2 para codigos de pais
     │
@@ -118,11 +119,8 @@ informix-consumer/
     │   ├── supplier.ts              # SupplierBuilder implements PayloadBuilder
     │   └── supplier-contact.ts      # SupplierContactBuilder implements PayloadBuilder
     │
-    ├── persistence/
-    │   └── snapshot-manager.ts      # Save/load/delete snapshot a disco (store + offsets)
-    │
     ├── kafka/
-    │   ├── consumer.ts              # Infra Kafka pura (connect, subscribe, run, seek, offset tracking)
+    │   ├── consumer.ts              # Infra Kafka pura (connect, subscribe, run, seek)
     │   ├── snapshot-tracker.ts      # Maquina de estados del snapshot
     │   └── message-handler.ts       # Orquestador eachMessage (con deteccion re-snapshot)
     │
@@ -150,7 +148,7 @@ informix-consumer/
 | Capa | Directorio | Responsabilidad |
 |------|-----------|-----------------|
 | **Types** | `types/` | Interfaces compartidas (Debezium events, payload shapes, deletion shapes) |
-| **Domain** | `domain/` | Table registry (tablas CDC), entity registry (entidades API), store en memoria, deteccion de cambios |
+| **Domain** | `domain/` | Table registry (tablas CDC), entity registry (entidades API), SQLite store persistente, deteccion de cambios |
 | **Payloads** | `payloads/` | Builders de payloads (patron Strategy via `PayloadBuilder` interface) + helpers compartidos (`payload-utils.ts`) |
 | **Kafka** | `kafka/` | Infraestructura Kafka pura, snapshot state machine, orquestacion de mensajes |
 | **Dispatch** | `dispatch/` | CDC debounce + aggregation, envio via HTTP (`HttpDispatcher` + `ApiClient`), buffer de reintentos |
@@ -184,7 +182,7 @@ Para añadir, por ejemplo, una entidad `warehouse`:
 
 ## Tests
 
-Suite de tests unitarios con [vitest](https://vitest.dev/). **207 tests** en 15 ficheros, ejecucion en ~400ms. Sin dependencias externas (sin Kafka, sin HTTP real).
+Suite de tests unitarios con [vitest](https://vitest.dev/). **205 tests** en 14 ficheros, ejecucion en ~400ms. Sin dependencias externas (sin Kafka, sin HTTP real).
 
 ```bash
 npm test              # ejecutar toda la suite una vez
@@ -210,8 +208,7 @@ Los tests estan colocados junto al codigo fuente (`*.test.ts`), excluidos del bu
 
 | Fichero | Que testea | Tests |
 |---|---|---|
-| `domain/store.test.ts` | `InMemoryStore` (CRUD single/array, storeFields, serialize/hydrate, registryHash) | 36 |
-| `persistence/snapshot-manager.test.ts` | `saveSnapshot`, `loadSnapshot`, `deleteSnapshot` (validacion, hash mismatch) | 9 |
+| `domain/store.test.ts` | `SqliteStore` (CRUD single/array, storeFields, keyField, offsets, registryHash, getDiskStats) | 38 |
 | `payloads/supplier.test.ts` | `SupplierBuilder` (build, datos incompletos, Status) | 11 |
 | `payloads/supplier-contact.test.ts` | `SupplierContactBuilder` (N direcciones, Country, null fields) | 12 |
 | `dispatch/cdc-debouncer.test.ts` | `CdcDebouncer` (debounce, merge, batching, stop) | 12 |
@@ -241,7 +238,7 @@ kafka/message-handler.ts:
 Parsear evento Debezium (extraer payload de {schema, payload})
   |
   v
-Actualizar store en memoria (siempre, para todas las tablas)
+Actualizar store SQLite (siempre, para todas las tablas)
   |
   v
 snapshot-tracker: Es snapshot (op: "r") o estamos en fase de rebuild?
@@ -539,9 +536,9 @@ Para ejecutar llamadas desde Swagger UI:
 4. Click **Authorize** → el token se guarda en localStorage entre recargas (`persistAuthorization: true`)
 5. Expandir cualquier endpoint y click **Try it out** → **Execute**
 
-## Store Viewer (visor web del store en memoria)
+## Store Viewer (visor web del store)
 
-Pagina HTML interactiva para explorar el contenido del `InMemoryStore` sin necesidad de buscar en logs. Accesible en `http://localhost:3001/store`.
+Pagina HTML interactiva para explorar el contenido del `SqliteStore` sin necesidad de buscar en logs. Accesible en `http://localhost:3001/store`.
 
 ### Como usarlo
 
@@ -560,7 +557,7 @@ Los datos de la pagina se obtienen via endpoints JSON protegidos con Bearer toke
 | Metodo | Ruta | Descripcion |
 |---|---|---|
 | `GET` | `/store` | Pagina HTML (sin auth) |
-| `GET` | `/store/api/stats` | Counts + memoria estimada por tabla |
+| `GET` | `/store/api/stats` | Counts + tamano SQLite en disco por tabla |
 | `GET` | `/store/api/tables/:table` | Lista de codigos de una tabla |
 | `GET` | `/store/api/tables/:table/:codigo` | Datos de un registro (single o array segun storeKind) |
 | `GET` | `/store/api/search?q=xxx` | Busqueda de codigos por substring (max 200 resultados) |
@@ -587,53 +584,61 @@ curl "http://localhost:3001/store/api/search?q=P018" \
 
 ### Funcionalidades de la UI
 
-- **Stats dashboard**: cards con contadores por tabla + total, incluyendo memoria estimada en heap
+- **Stats dashboard**: cards con contadores por tabla + total, incluyendo tamano de la base de datos SQLite en disco
 - **Explorador de tabla**: selector de tabla + lista de codigos con filtro local
 - **Vista unificada por codigo**: carga ctercero + gproveed + cterdire del mismo codigo en un solo panel
 - **Busqueda global**: busca substring de codigo en todas las tablas
 - **JSON syntax highlighting**: tema oscuro con colores para keys, strings, numbers, booleans, nulls
 - **Refresh manual**: boton para refrescar datos (sin polling automatico)
 
-## Store snapshot persistence (arranque rapido)
+## SQLite store (persistencia y arranque rapido)
 
-El consumer persiste el `InMemoryStore` y los offsets de Kafka a un fichero JSON en disco. Al re-arrancar, carga el snapshot y hace `seek` en Kafka al ultimo offset procesado, evitando re-leer todo el historico desde offset 0 (~2s vs ~5min).
+El consumer usa `better-sqlite3` para almacenar los datos CDC en una base de datos SQLite persistente en disco. Al re-arrancar, los datos ya estan en el fichero `.db` y los offsets de Kafka guardados en la tabla `meta` — el consumer hace `seek` al ultimo offset procesado y continua sin re-leer todo el historico (~2s vs ~5min).
+
+Esto elimina la necesidad de snapshots JSON, serializacion/deserializacion y saves periodicos. Cada write es inmediatamente persistente (WAL mode).
+
+### Schema SQLite
+
+```sql
+-- Stores "single" (ctercero, gproveed): 1 registro por clave
+single_store (tbl TEXT, key TEXT, data TEXT, PRIMARY KEY (tbl, key))
+
+-- Stores "array" (cterdire, cterasoc): N registros por clave
+array_store (id INTEGER PRIMARY KEY, tbl TEXT, key TEXT, data TEXT)
+
+-- Metadata: offsets Kafka, registry hash
+meta (key TEXT PRIMARY KEY, value TEXT)
+```
 
 ### Ciclo de vida
 
 ```
 Arranque
-  ├── Existe snapshot? ──No──> Rebuild completo (offset 0, como antes)
+  ├── Existen offsets en meta? ──No──> Rebuild completo (offset 0)
   └── Si
-       ├── Hash del registry coincide? ──No──> Borra snapshot, rebuild completo
+       ├── Hash del registry coincide? ──No──> clear() + rebuild completo
        └── Si
-            ├── Hydrate store desde fichero
+            ├── Datos ya en SQLite (no necesita hydrate)
             ├── Seek por particion al offset guardado + 1
             └── SnapshotTracker arranca en modo ready (skip fase snapshot)
-
-Operacion normal
-  ├── onStoreReady: guarda snapshot al completar rebuild
-  ├── Periodico: guarda snapshot cada 5 minutos
-  └── Shutdown: guarda snapshot en handler SIGTERM/SIGINT (solo produccion*)
 ```
-
-\* En desarrollo, `tsx --watch` intercepta SIGTERM sin propagarlo al proceso Node. Los mecanismos `onStoreReady` y periodico compensan: el peor caso es reprocesar ~5 min de CDCs (idempotente). En produccion (`node dist/index.js`) los tres mecanismos funcionan.
 
 ### Invalidacion automatica
 
-El snapshot se invalida (borra + rebuild) en dos casos:
+El store se invalida (clear + rebuild) en dos casos:
 
-1. **Cambio en el registry**: si se añade/quita una tabla, se modifican `storeFields` o `keyField`, el hash SHA-256 del registry no coincide con el del snapshot. Esto garantiza que tras cambios en el schema el store se reconstruya limpio.
+1. **Cambio en el registry**: si se añade/quita una tabla, se modifican `storeFields` o `keyField`, el hash SHA-256 del registry no coincide con el guardado en `meta`. Esto garantiza que tras cambios en el schema el store se reconstruya limpio.
 
-2. **Re-snapshot de Debezium**: si tras cargar el snapshot llegan eventos `op: "r"` (snapshot), significa que Debezium re-envio los datos de origen. El consumer detecta esto, limpia el store, resetea el tracker y borra el snapshot — dejando que el rebuild se complete normalmente.
+2. **Re-snapshot de Debezium**: si tras resumir llegan eventos `op: "r"` (snapshot), significa que Debezium re-envio los datos de origen. El consumer detecta esto, limpia el store y los offsets, y hace seek a offset 0 en todos los topics.
 
 ### Variables de entorno
 
 | Variable | Default | Descripcion |
 |---|---|---|
-| `SNAPSHOT_PATH` | `./data/store-snapshot.json` | Ruta del fichero de snapshot |
-| `FORCE_REBUILD` | `false` | Si `true`, ignora cualquier snapshot y fuerza rebuild desde Kafka |
+| `STORE_DB_PATH` | `./data/store.db` | Ruta del fichero SQLite |
+| `FORCE_REBUILD` | `false` | Si `true`, limpia el store y fuerza rebuild completo desde Kafka |
 
-En Docker, el compose monta un named volume `consumer-data` en `/app/data` para que el snapshot persista entre recreaciones del container. El Dockerfile crea `/app/data` con `chown node:node` para que el proceso (que corre como `USER node`) pueda escribir.
+En Docker, el compose monta un named volume `consumer-data` en `/app/data` para que la DB persista entre recreaciones del container. El Dockerfile crea `/app/data` con `chown node:node` para que el proceso (que corre como `USER node`) pueda escribir.
 
 ## Requisitos previos
 
@@ -736,8 +741,8 @@ Usar el Dockerfile directamente con `CMD ["node", "dist/index.js"]` (sin el over
 | `DEBOUNCE_WINDOW_MS` | `1000` | Ventana de debounce en ms (tiempo que se acumulan CDCs antes de flush) |
 | `DEBOUNCE_MAX_BUFFER_SIZE` | `500` | Numero maximo de codigos en el buffer antes de flush anticipado |
 | `BULK_BATCH_SIZE` | `500` | Tamaño maximo de items por PUT (usado por debouncer y Trigger API) |
-| `SNAPSHOT_PATH` | `./data/store-snapshot.json` | Ruta del fichero de snapshot del store (persistencia entre reinicios) |
-| `FORCE_REBUILD` | `false` | Si `true`, ignora snapshot existente y fuerza rebuild completo desde Kafka |
+| `STORE_DB_PATH` | `./data/store.db` | Ruta del fichero SQLite del store (persistencia entre reinicios) |
+| `FORCE_REBUILD` | `false` | Si `true`, limpia el store SQLite y fuerza rebuild completo desde Kafka |
 
 **Nota sobre LOG_LEVEL**: Con `info` solo se loguean metadatos (tabla, operacion, campos cambiados, codigo). Con `debug` se incluyen payloads completos y valores PII (nombres, NIFs, direcciones). Usar `debug` solo en desarrollo. Cambiar `LOG_LEVEL` requiere recrear el container (`docker compose up -d consumer`).
 
@@ -782,7 +787,8 @@ Nota: los campos `CHAR` de Informix vienen con espacios al final (padding). El c
 - **HTTP server**: Fastify 5 + `@fastify/swagger` + `@fastify/swagger-ui` (OpenAPI 3.0.3)
 - **Logging**: `pino` (JSON estructurado, zero-dep)
 - **Monitoring**: Grafana 11.5 + Loki 3.4 + Promtail 3.4
-- **Testing**: `vitest` (207 tests, ~400ms)
+- **Persistencia**: `better-sqlite3` (SQLite embebido con WAL mode)
+- **Testing**: `vitest` (205 tests, ~400ms)
 - **Plataforma Docker**: `linux/amd64` (requerido por librdkafka en Apple Silicon)
 
 ## Seguridad y resiliencia
@@ -791,7 +797,7 @@ Nota: los campos `CHAR` de Informix vienen con espacios al final (padding). El c
 - **HTTP timeout**: Todas las llamadas al Ingest API usan `AbortSignal.timeout(30_000)` — sin posibilidad de hang indefinido
 - **Token refresh dedup**: Si varias llamadas concurrentes detectan token expirado, `authPromise` garantiza una sola peticion de autenticacion
 - **Error body a debug**: Los bodies de error de la API se loguean solo a nivel `debug`, evitando leaks de informacion sensible en produccion
-- **Shutdown con timeout**: `Promise.race` entre shutdown graceful (stopRetryLoop + debouncer.stop + saveSnapshot + server.close + consumer.disconnect) y un timeout de 10s — `debouncer.stop()` hace flush final para no perder eventos encolados, `saveSnapshot` persiste el store a disco para arranque rapido
+- **Shutdown con timeout**: `Promise.race` entre shutdown graceful (stopRetryLoop + debouncer.stop + server.close + consumer.disconnect + store.close) y un timeout de 10s — `debouncer.stop()` hace flush final para no perder eventos encolados
 - **Schema validation**: `CodSupplier` en el body de los triggers tiene `maxItems: 10_000` y `maxLength: 50` por item (Fastify valida automaticamente)
 - **Docker resource limits**: Todos los servicios tienen limites de memoria y CPU para evitar que un servicio desbocado consuma todos los recursos del host
 - **Dockerfile produccion**: `npm ci --omit=dev` (sin devDependencies), `USER node` (no root)
@@ -803,7 +809,8 @@ Nota: los campos `CHAR` de Informix vienen con espacios al final (padding). El c
 3. ~~Documentacion Swagger/OpenAPI auto-generada para la Trigger API~~ ✓
 4. ~~Tests unitarios (Tier 1 + Tier 2)~~ ✓
 5. ~~Refactoring entity-registry para escalabilidad~~ ✓
-6. ~~Store Viewer — visor web del InMemoryStore~~ ✓
-7. Manejo de reintentos HTTP y dead letter queue
-8. Filtrado por tipo de operacion si es necesario
-9. Alertas en Grafana (errores sostenidos, pending buffer creciendo)
+6. ~~Store Viewer — visor web del store~~ ✓
+7. ~~Migracion a SQLite (better-sqlite3) — elimina InMemoryStore + snapshots~~ ✓
+8. Manejo de reintentos HTTP y dead letter queue
+9. Filtrado por tipo de operacion si es necesario
+10. Alertas en Grafana (errores sostenidos, pending buffer creciendo)

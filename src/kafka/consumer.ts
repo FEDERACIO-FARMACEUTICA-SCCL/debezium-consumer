@@ -8,18 +8,6 @@ export type MessageCallback = (params: {
   message: KafkaJS.EachMessagePayload["message"];
 }) => Promise<void>;
 
-export class OffsetTracker {
-  private offsets = new Map<string, string>();
-
-  update(topic: string, partition: number, offset: string): void {
-    this.offsets.set(`${topic}-${partition}`, offset);
-  }
-
-  getAll(): Map<string, string> {
-    return new Map(this.offsets);
-  }
-}
-
 export interface KafkaConsumerHandle {
   disconnect(): Promise<void>;
   /** Seek all topic-partitions to offset 0 and clear resume state. */
@@ -29,7 +17,7 @@ export interface KafkaConsumerHandle {
 export async function createKafkaConsumer(
   config: AppConfig,
   onMessage: MessageCallback,
-  offsetTracker: OffsetTracker,
+  onOffset: (key: string, offset: string) => void,
   resumeOffsets?: Map<string, string>
 ): Promise<KafkaConsumerHandle> {
   const kafka = new KafkaJS.Kafka({
@@ -63,7 +51,7 @@ export async function createKafkaConsumer(
 
   await consumer.run({
     eachMessage: async ({ topic, partition, message }) => {
-      // Seek logic: skip old messages when resuming from snapshot
+      // Seek logic: skip old messages when resuming from saved offsets
       if (resumeOffsets?.size) {
         const key = `${topic}-${partition}`;
         const targetOffset = resumeOffsets.get(key);
@@ -83,7 +71,7 @@ export async function createKafkaConsumer(
       }
 
       await onMessage({ topic, partition, message });
-      offsetTracker.update(topic, partition, message.offset);
+      onOffset(`${topic}-${partition}`, message.offset);
     },
   });
 

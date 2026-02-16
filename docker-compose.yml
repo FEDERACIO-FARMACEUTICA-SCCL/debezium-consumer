@@ -23,7 +23,7 @@ services:
       HTTP_ENABLED: "true"
       TRIGGER_API_KEY: ${TRIGGER_API_KEY}
       BULK_BATCH_SIZE: "500"
-      SNAPSHOT_PATH: /app/data/store-snapshot.json
+      STORE_DB_PATH: /app/data/store.db
 #      FORCE_REBUILD: "true"
     labels:
       logging: "loki"

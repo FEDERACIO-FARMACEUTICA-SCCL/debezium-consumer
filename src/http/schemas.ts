@@ -91,7 +91,7 @@ export const storeStatsSchema = {
   tags: ["Store Viewer"],
   summary: "Get store stats",
   description:
-    "Returns record counts and estimated memory usage (bytes) per table.",
+    "Returns record counts per table and SQLite disk usage.",
   security: storeViewerSecurity,
   response: {
     200: {
@@ -103,14 +103,14 @@ export const storeStatsSchema = {
           additionalProperties: { type: "number" },
         },
         total: { type: "number" },
-        memory: {
+        disk: {
           type: "object",
-          additionalProperties: { type: "number" },
-          description: "Estimated memory usage in bytes per table",
-        },
-        memoryTotal: {
-          type: "number",
-          description: "Total estimated memory usage in bytes",
+          properties: {
+            fileSizeBytes: { type: "number", description: "SQLite file size in bytes" },
+            pageCount: { type: "number", description: "Total SQLite pages" },
+            pageSize: { type: "number", description: "SQLite page size in bytes" },
+          },
+          description: "SQLite disk usage statistics",
         },
       },
     },

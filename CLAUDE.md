@@ -27,7 +27,7 @@ npm run test:watch    # modo watch (re-ejecuta al guardar)
 # Desarrollo local (sin Docker, requiere Kafka accesible en localhost)
 npm run dev
 
-# Store Viewer (visor web del InMemoryStore)
+# Store Viewer (visor web del SQLite store)
 open http://localhost:3001/store
 
 # Grafana UI
@@ -67,7 +67,8 @@ src/
     table-registry.ts           # Fuente unica de verdad para TABLAS: watched fields, store kinds, payload mappings
     entity-registry.ts          # Fuente unica de verdad para ENTIDADES: type, label, triggerPath, apiPath, swagger
     codare-registry.ts          # Filtro de negocio: codare → PayloadType[] (que tipos de tercero disparan cada entidad)
-    store.ts                    # Clase InMemoryStore (data-driven desde table-registry, con filtrado de campos via storeFields)
+    sqlite-store.ts             # Clase SqliteStore (better-sqlite3, data-driven desde table-registry, con filtrado de campos)
+    store.ts                    # Singleton mutable initStore()/store + convenience wrappers (updateStore, getCtercero, etc.)
     watched-fields.ts           # detectChanges() lee WATCHED_FIELDS del table-registry
     country-codes.ts            # Mapping ISO3 → ISO2 para codigos de pais
 
@@ -77,11 +78,8 @@ src/
     supplier.ts                 # SupplierBuilder implements PayloadBuilder
     supplier-contact.ts         # SupplierContactBuilder implements PayloadBuilder
 
-  persistence/
-    snapshot-manager.ts         # Save/load/delete snapshot a disco (store + offsets + registryHash)
-
   kafka/
-    consumer.ts                 # Infra Kafka (connect, subscribe, run, seek, OffsetTracker)
+    consumer.ts                 # Infra Kafka (connect, subscribe, run, seek, onOffset callback)
     snapshot-tracker.ts         # Maquina de estados del snapshot (con startReady y reset)
     message-handler.ts          # Orquestador eachMessage (con deteccion re-snapshot)
 
@@ -176,7 +174,7 @@ Si solo necesitas añadir una tabla que alimenta entidades existentes (ej: una t
 
 ## Tests
 
-Suite de tests con **vitest**. **207 tests** en 15 ficheros, ~400ms. Tests colocados junto al codigo fuente como `*.test.ts` (excluidos del build de TypeScript via `tsconfig.json`).
+Suite de tests con **vitest**. **205 tests** en 14 ficheros, ~400ms. Tests colocados junto al codigo fuente como `*.test.ts` (excluidos del build de TypeScript via `tsconfig.json`).
 
 ```bash
 npm test              # ejecutar toda la suite una vez
@@ -200,12 +198,11 @@ npm run test:watch    # modo watch (re-ejecuta al guardar)
 | `domain/entity-registry.test.ts` | `ENTITY_REGISTRY`, lookups | Campos requeridos, ENTITY_MAP, ENTITY_LABELS, ENTITY_ENDPOINTS, unicidad |
 | `domain/codare-registry.test.ts` | `CODARE_REGISTRY`, `getAllowedTypes` | PRO mapping, unknown codare, null/undefined, whitespace trim, case-sensitivity |
 
-### Tier 2 — Logica de negocio (9 ficheros)
+### Tier 2 — Logica de negocio (8 ficheros)
 
 | Fichero test | Modulo bajo test | Que cubre |
 |---|---|---|
-| `domain/store.test.ts` | `InMemoryStore` | CRUD single/array, deduplicacion, whitespace matching, getStats, getAllCodigos, storeFields filtering, serialize/hydrate, computeRegistryHash, clear |
-| `persistence/snapshot-manager.test.ts` | `saveSnapshot`, `loadSnapshot`, `deleteSnapshot` | Estructura correcta, directorio padre, hash mismatch, version mismatch, JSON corrupto |
+| `domain/store.test.ts` | `SqliteStore` | CRUD single/array, deduplicacion, whitespace matching, getStats, getAllCodigos, storeFields filtering, offsets, registryHash, getDiskStats, close, computeRegistryHash, clear |
 | `payloads/supplier.test.ts` | `SupplierBuilder` | Build exitoso, datos incompletos, Status ACTIVE/INACTIVE, NIF null, trimming, StartDate |
 | `payloads/supplier-contact.test.ts` | `SupplierContactBuilder` | 1 y N direcciones, datos incompletos, Country ISO3→ISO2, campos null, Status |
 | `dispatch/cdc-debouncer.test.ts` | `CdcDebouncer` | Debounce timer, merge types/codigos, buffer overflow, batching, builder null→pending, dispatcher error, stop() |
@@ -224,7 +221,7 @@ npm run test:watch    # modo watch (re-ejecuta al guardar)
 - **BulkHandler**: mock manual `{ type, syncAll: vi.fn(), deleteAll: vi.fn() }` para tests del BulkService generico
 - **Entity Registry**: `vi.mock("../domain/entity-registry")` con ENTITY_MAP mock para tests de BulkService
 - **watched-fields.test.ts**: `vi.mock("./table-registry")` para controlar `WATCHED_FIELDS` sin depender del registry real
-- **store.test.ts**: instancia `new InMemoryStore(miniRegistry)` con un registry custom (no usa el singleton global). Tests de `storeFields` usan `filteredRegistry` separado
+- **store.test.ts**: instancia `new SqliteStore(":memory:", miniRegistry)` con un registry custom (no usa el singleton global). Tests de `storeFields` usan `filteredRegistry` separado
 
 ### Como añadir tests para una nueva entidad
 
@@ -338,42 +335,53 @@ Tag de logging: `"Debounce"`. Queries utiles en Grafana:
 - Capacidad maxima 10.000 entradas; al llegar al limite evicta la mas antigua con `logger.warn`
 - Los dispatch se hacen con `await` + try/catch; un fallo en un tipo no bloquea los demas
 
-### Store snapshot persistence (`persistence/snapshot-manager.ts`)
-- Persiste el `InMemoryStore` + offsets Kafka a disco para evitar replay completo al reiniciar
-- Al arrancar, si hay un snapshot valido, hidrata el store y hace seek a los offsets guardados (~2s vs ~5min)
-- Formato: JSON con `version`, `registryHash`, `timestamp`, `offsets`, `store`
-- Invalidacion automatica: hash del registry no coincide, version distinta, JSON corrupto → descarta y hace rebuild completo
-- Deteccion de re-snapshot: si aparecen eventos `op: "r"` despues de cargar desde snapshot → `store.clear()`, `tracker.reset()`, `storeReadyFired = false`, elimina snapshot, y `seekAllToBeginning()` para leer desde offset 0 (sin esto el consumer se queda colgado leyendo datos parciales)
-- `KafkaConsumerHandle` en `consumer.ts`: interfaz que expone `disconnect()` y `seekAllToBeginning()` (limpia resumeOffsets + seekDone + seek offset 0 en todos los topics)
-- `FORCE_REBUILD=true` fuerza rebuild completo (elimina snapshot y lee desde offset 0)
-- Env var `SNAPSHOT_PATH` (default `./data/store-snapshot.json`)
+### SQLite store (`domain/sqlite-store.ts`)
+
+Los datos CDC se persisten en SQLite via `better-sqlite3` (API sincrona, ideal para Node single-threaded). Cada write va directamente a disco, eliminando la necesidad del antiguo sistema de snapshots (snapshot-manager.ts, periodic saves, onStoreReady delays, shutdown saves).
+
+**Schema SQLite**:
+- `single_store (tbl, key, data)` — tablas "single" (ctercero, gproveed): 1 registro por clave. `data` es JSON stringified. PK compuesta `(tbl, key)`.
+- `array_store (id, tbl, key, data)` — tablas "array" (cterdire, cterasoc, gvenacuh): N registros por clave. Indice en `(tbl, key)`.
+- `meta (key, value)` — offsets Kafka (`offset:{topic}-{partition}`) y registry hash (`registry_hash`).
+
+**PRAGMAs de rendimiento**: `journal_mode = WAL` + `synchronous = NORMAL` + `cache_size = -8000` (8MB). Writes rapidos y crash-safe.
+
+**API publica** (misma interfaz que el antiguo InMemoryStore, zero cambios en consumidores):
+- `update(table, op, before, after)` — INSERT/REPLACE/DELETE segun operacion Debezium
+- `getSingle(table, codigo)` / `getArray(table, codigo)` — lectura por clave
+- `getAllCodigos(table)` / `getStats()` / `clear()` — gestion
+- `getDiskStats()` — tamano fichero + page count/size (reemplaza `getMemoryEstimate()`)
+- `setOffset(key, offset)` / `getAllOffsets()` / `clearOffsets()` — persiste offsets Kafka (reemplaza `OffsetTracker`)
+- `getRegistryHash()` / `setRegistryHash(hash)` — hash del registry para invalidacion (reemplaza snapshot hash)
+- `close()` — cierra la conexion SQLite
+
+**Singleton y inicializacion** (`store.ts`):
+- `initStore(dbPath)` crea la instancia (llamado desde `index.ts` despues de cargar config)
+- `export let store` — singleton mutable, mismo patron que `logger`
+- Convenience wrappers (`updateStore`, `getCtercero`, etc.) siguen disponibles
+
+**Flujo de arranque**:
+1. `initStore(config.store.dbPath)` abre (o crea) la DB
+2. Compara `computeRegistryHash()` con el hash guardado; si difiere → `store.clear()`
+3. `store.getAllOffsets()` carga offsets guardados; si hay offsets → resume, sino → full rebuild
+4. Cada mensaje procesado llama `store.setOffset()` — persistido inmediatamente
+
+**Deteccion de re-snapshot**: si aparecen eventos `op: "r"` despues de resume → `store.clear()` + `store.clearOffsets()` + `seekAllToBeginning()`
+- `KafkaConsumerHandle` en `consumer.ts`: interfaz que expone `disconnect()` y `seekAllToBeginning()`
+- `SnapshotTracker` acepta `startReady=true` para arrancar en modo "ready" y `reset()` para volver a modo rebuild
+- `FORCE_REBUILD=true` fuerza rebuild completo (limpia la DB y lee desde offset 0)
+- Env var `STORE_DB_PATH` (default `./data/store.db`)
 - Docker: volumen `consumer-data` montado en `/app/data`, Dockerfile crea `/app/data` con `chown node:node`
-- Tag de logging: `"Snapshot"` — visible en Grafana
-- `InMemoryStore.serialize()` / `hydrate()` para serializar/hidratar datos
-- `computeRegistryHash()` en `table-registry.ts` genera hash SHA-256 deterministico del registry
-- `OffsetTracker` en `consumer.ts` registra el offset mas alto procesado por topic-partition
-- `SnapshotTracker` acepta `startReady=true` para arrancar en modo "ready" (skip snapshot detection) y `reset()` para volver a modo rebuild
+- Tag de logging: `"Store"` — visible en Grafana
 
-#### Tres mecanismos de save (redundancia)
+**Offset out of range**: Si los topics de Kafka se recrean/purgan, los offsets guardados ya no existen. Solucion manual: `docker exec informix-consumer rm -f /app/data/store.db && docker compose restart consumer`.
 
-El snapshot se guarda en tres momentos para garantizar persistencia:
-
-| Mecanismo | Trigger | Funciona con `--watch`? |
-|---|---|---|
-| `onStoreReady` | 30s despues de completar rebuild (delay para drenar eventos pendientes) | Si |
-| Periodico | Cada 5 minutos (`setInterval`) | Si |
-| Shutdown | SIGTERM/SIGINT en `process.on` | Solo sin `--watch` |
-
-`tsx --watch` (usado en dev) intercepta SIGTERM sin propagarlo al proceso Node, por lo que el handler de shutdown no se ejecuta. Los otros dos mecanismos compensan: el peor caso es reproceesar ~5 min de CDCs (idempotente). En produccion (`node dist/index.js`) los tres mecanismos funcionan.
-
-**Nota importante**: `onStoreReady` tiene un delay de 30s porque el `SnapshotTracker` detecta el fin del snapshot cuando recibe `snapshot: "last"` en UN topic, pero el consumer lee de multiples topics en paralelo y puede que aun no haya consumido todos los eventos `op: "r"` de los demas topics. Sin el delay, el snapshot se guarda con datos incompletos y al reiniciar se detecta un falso re-snapshot.
-
-**Offset out of range**: Si los topics de Kafka se recrean/purgan (ej: reinicio de Debezium), los offsets guardados ya no existen. El consumer entra en un bucle infinito de seek. Solucion manual: `docker exec informix-consumer rm -f /app/data/store-snapshot.json && docker compose restart consumer`.
+**Ventaja sobre el antiguo snapshot JSON**: no hace falta serializar/hidratar ~80K registros al arrancar. SQLite simplemente reabre el fichero (~instant). Ademas, escala a millones de registros sin consumir RAM (los datos viven en disco, el OS gestiona el cache).
 
 ### Shutdown graceful
-- `Promise.race` entre el shutdown graceful (stopRetryLoop + debouncer.stop + persistSnapshot + server.close + consumer.disconnect) y un timeout de 10s
+- `Promise.race` entre el shutdown graceful (stopRetryLoop + debouncer.stop + server.close + consumer.disconnect + store.close) y un timeout de 10s
 - `debouncer.stop()` hace un flush final para no perder eventos encolados
-- `persistSnapshot()` persiste el store + offsets a disco antes de desconectar
+- `store.close()` cierra la conexion SQLite (los datos ya estan en disco)
 - Si el timeout gana, se loguea el error y se sale con `exitCode = 1`
 - Evita que un `consumer.disconnect()` bloqueado impida el cierre del proceso
 
@@ -474,16 +482,16 @@ Ejemplo de respuesta con skips:
 | `/triggers/contacts` | POST | Bearer | `{ CodSupplier?: string[] }` | Sync bulk de contacts |
 | `/triggers/contacts` | DELETE | Bearer | `{ CodSupplier?: string[] }` | Delete bulk de contacts |
 | `/store` | GET | No | — | Store Viewer (pagina HTML interactiva) |
-| `/store/api/stats` | GET | Bearer | — | Stats del store (counts + memoria estimada por tabla) |
+| `/store/api/stats` | GET | Bearer | — | Stats del store (counts + tamano SQLite en disco) |
 | `/store/api/tables/:table` | GET | Bearer | — | Lista codigos de una tabla |
 | `/store/api/tables/:table/:codigo` | GET | Bearer | — | Datos de un registro por tabla y codigo |
 | `/store/api/search?q=xxx` | GET | Bearer | — | Busqueda de codigos por substring (max 200 resultados) |
 
 Las rutas `/triggers/*` se generan automaticamente desde `ENTITY_REGISTRY`. Al añadir una nueva entidad al registry, las rutas y schemas Swagger correspondientes se crean sin modificar `server.ts` ni `schemas.ts`.
 
-### Store Viewer (visor web del InMemoryStore)
+### Store Viewer (visor web del SQLite store)
 
-Pagina HTML autocontenida servida en `/store` que permite explorar el contenido del `InMemoryStore` desde el navegador. Util para diagnosticar datos, verificar registros y depurar problemas sin necesidad de buscar en logs.
+Pagina HTML autocontenida servida en `/store` que permite explorar el contenido del store desde el navegador. Util para diagnosticar datos, verificar registros y depurar problemas sin necesidad de buscar en logs.
 
 - **Implementacion**: `http/store-viewer.ts` — funcion `registerStoreViewer(app)` que registra la pagina HTML + 4 endpoints JSON
 - **Auth**: la pagina HTML (`/store`) se sirve sin auth (igual que `/docs`). Los endpoints de datos (`/store/api/*`) requieren Bearer token
@@ -492,7 +500,7 @@ Pagina HTML autocontenida servida en `/store` que permite explorar el contenido 
 - **Zero dependencias extra**: HTML + CSS + JS inline, sin librerias frontend, sin ficheros estaticos
 
 Funcionalidades de la UI:
-- Stats dashboard con cards por tabla + total, incluyendo **memoria estimada** (bytes en heap V8)
+- Stats dashboard con cards por tabla + total, incluyendo **tamano en disco** (SQLite file size)
 - Explorador de tabla: selector + lista de codigos (con filtro local)
 - Vista unificada por codigo: carga datos de **todas las tablas** (ctercero + gproveed + cterdire + cterasoc) en un solo panel
 - Busqueda global: busca substring de codigo en todas las tablas (debounce 300ms en el cliente)
