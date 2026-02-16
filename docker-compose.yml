@@ -29,7 +29,7 @@ services:
       logging: "loki"
     volumes:
       - ./src:/app/src:ro
-      - consumer-data:/app/data
+      - ./data:/app/data
     command: npx tsx --watch src/index.ts
     networks:
       - debezium-network
@@ -96,7 +96,6 @@ services:
     restart: on-failure
 
 volumes:
-  consumer-data:
   loki-data:
   grafana-data:
 
