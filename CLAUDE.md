@@ -2,7 +2,7 @@
 
 ## Que es este proyecto
 
-Consumer Kafka en Node.js + TypeScript que lee eventos CDC de Informix via Debezium. Transforma eventos en payloads Supplier y SupplierContact. Incluye stack de monitoring con Grafana + Loki para visualizacion en tiempo real.
+Consumer Kafka en Node.js + TypeScript que lee eventos CDC de Informix via Debezium. Transforma eventos en payloads Supplier, SupplierContact y Agreement. Incluye stack de monitoring con Grafana + Loki para visualizacion en tiempo real.
 
 ## Proyecto hermano
 
@@ -60,13 +60,13 @@ src/
 
   types/
     debezium.ts                 # Interfaces Debezium: DebeziumEvent, DebeziumSource, Operation, OP_LABELS
-    payloads.ts                 # Interfaces Supplier, SupplierContact, PayloadType, AnyPayload
-    deletions.ts                # SupplierDeletion, SupplierContactDeletion, SkippedDetail, BulkResult
+    payloads.ts                 # Interfaces Supplier, SupplierContact, Agreement, PayloadType, AnyPayload
+    deletions.ts                # SupplierDeletion, SupplierContactDeletion, AgreementDeletion, SkippedDetail, BulkResult
 
   domain/
     table-registry.ts           # Fuente unica de verdad para TABLAS: watched fields, store kinds, payload mappings
     entity-registry.ts          # Fuente unica de verdad para ENTIDADES: type, label, triggerPath, apiPath, swagger
-    codare-registry.ts          # Filtro de negocio: codare → PayloadType[] (que tipos de tercero disparan cada entidad)
+    codare-registry.ts          # Filtro de negocio: codare → PayloadType[] + CODARE_EXEMPT para tipos exentos (agreement)
     sqlite-store.ts             # Clase SqliteStore (better-sqlite3, data-driven desde table-registry, con filtrado de campos)
     store.ts                    # Singleton mutable initStore()/store + convenience wrappers (updateStore, getCtercero, etc.)
     watched-fields.ts           # detectChanges() lee WATCHED_FIELDS del table-registry
@@ -77,6 +77,7 @@ src/
     payload-utils.ts            # Helpers compartidos: trimOrNull, isActive, formatDate
     supplier.ts                 # SupplierBuilder implements PayloadBuilder
     supplier-contact.ts         # SupplierContactBuilder implements PayloadBuilder
+    agreement.ts                # AgreementBuilder implements PayloadBuilder (gvenacuh → Agreement[])
 
   kafka/
     consumer.ts                 # Infra Kafka (connect, subscribe, run, seek, onOffset callback)
@@ -95,6 +96,7 @@ src/
     handlers/
       supplier-handler.ts       # SupplierBulkHandler implements BulkHandler
       contact-handler.ts        # ContactBulkHandler implements BulkHandler
+      agreement-handler.ts      # AgreementBulkHandler implements BulkHandler (sin filtro codare)
 
   http/
     server.ts                   # Fastify server: rutas dinamicas desde ENTITY_REGISTRY + Swagger UI + health
@@ -112,8 +114,8 @@ El proyecto tiene dos registries complementarios:
 
 Lookups derivados del entity-registry (computados una vez al cargar modulo):
 - `ENTITY_MAP`: `Map<PayloadType, EntityDefinition>`
-- `ENTITY_LABELS`: `Record<string, string>` — para logging (`{ supplier: "Supplier", contact: "SupplierContact" }`)
-- `ENTITY_ENDPOINTS`: `Record<string, string>` — para dispatch HTTP (`{ supplier: "/ingest-api/suppliers", ... }`)
+- `ENTITY_LABELS`: `Record<string, string>` — para logging (`{ supplier: "Supplier", contact: "SupplierContact", agreement: "Agreement" }`)
+- `ENTITY_ENDPOINTS`: `Record<string, string>` — para dispatch HTTP (`{ supplier: "/ingest-api/suppliers", agreement: "/ingest-api/agreements", ... }`)
 
 ### Codare registry (filtro de negocio por tipo de tercero)
 
@@ -127,23 +129,26 @@ CODARE_REGISTRY = [
 ```
 
 - `getAllowedTypes(codare)` → `Set<PayloadType>` (vacio si codare no esta registrado o es null)
+- `CODARE_EXEMPT: Set<PayloadType>` — tipos exentos del filtro codare (actualmente: `"agreement"`)
+- `isCodareExempt(type)` → `boolean` — true si el tipo no necesita filtro codare
 - Usado en dos puntos:
-  1. **`message-handler.ts`** — filtra payloadTypes antes de `debouncer.enqueue()` (CDC en tiempo real)
-  2. **Bulk handlers** (`supplier-handler.ts`, `contact-handler.ts`) — filtra en `syncAll`/`deleteAll` (Trigger API)
+  1. **`message-handler.ts`** — filtra payloadTypes antes de `debouncer.enqueue()` (CDC en tiempo real). Los tipos en `CODARE_EXEMPT` no se filtran.
+  2. **Bulk handlers** (`supplier-handler.ts`, `contact-handler.ts`) — filtra en `syncAll`/`deleteAll` (Trigger API). `AgreementBulkHandler` no aplica filtro codare.
 - El store almacena TODOS los registros sin filtrar (el filtro solo afecta al dispatch)
 - Skip reason en bulk: `"codare 'CLI' not applicable"`
 
 Para extender (ej: laboratorios):
 1. Anadir a `CODARE_REGISTRY`: `{ codare: "LAB", payloadTypes: ["supplier", "contact", "laboratory"] }`
 2. Crear entidad `laboratory` siguiendo el patron habitual (entity-registry + builder + handler)
-3. **Zero cambios** en message-handler, bulk-service, debouncer, server, schemas
+3. Si la entidad no depende de codare, anadir a `CODARE_EXEMPT`
+4. **Zero cambios** en message-handler, bulk-service, debouncer, server, schemas
 
 ### Flujo de datos
 
 1. `kafka/consumer.ts` recibe mensajes y delega a `MessageCallback`
 2. `kafka/message-handler.ts` parsea el envelope Debezium, actualiza el store, consulta el snapshot tracker
 3. Para eventos live CDC: detecta cambios en watched fields, calcula payload types a nivel de campo via `FIELD_TO_PAYLOADS`
-4. Filtra payload types por `codare` del registro ctercero (solo codares registrados pasan — `codare-registry.ts`)
+4. Filtra payload types por `codare` del registro ctercero (solo codares registrados pasan — `codare-registry.ts`). Tipos en `CODARE_EXEMPT` (ej: agreement) no se filtran.
 5. `dispatch/cdc-debouncer.ts` acumula `codigo → Set<PayloadType>` en una ventana de tiempo (default 1s)
 6. Al hacer flush: construye payloads desde el store (que ya tiene el estado final), agrupa items por tipo y envia en batches
 7. Si un builder retorna null, el codigo va al `pending-buffer` para reintentos
@@ -174,7 +179,7 @@ Si solo necesitas añadir una tabla que alimenta entidades existentes (ej: una t
 
 ## Tests
 
-Suite de tests con **vitest**. **205 tests** en 14 ficheros, ~400ms. Tests colocados junto al codigo fuente como `*.test.ts` (excluidos del build de TypeScript via `tsconfig.json`).
+Suite de tests con **vitest**. **226 tests** en 16 ficheros, ~450ms. Tests colocados junto al codigo fuente como `*.test.ts` (excluidos del build de TypeScript via `tsconfig.json`).
 
 ```bash
 npm test              # ejecutar toda la suite una vez
@@ -205,11 +210,13 @@ npm run test:watch    # modo watch (re-ejecuta al guardar)
 | `domain/store.test.ts` | `SqliteStore` | CRUD single/array, deduplicacion, whitespace matching, getStats, getAllCodigos, storeFields filtering, offsets, registryHash, getDiskStats, close, computeRegistryHash, clear |
 | `payloads/supplier.test.ts` | `SupplierBuilder` | Build exitoso, datos incompletos, Status ACTIVE/INACTIVE, NIF null, trimming, StartDate |
 | `payloads/supplier-contact.test.ts` | `SupplierContactBuilder` | 1 y N direcciones, datos incompletos, Country ISO3→ISO2, campos null, Status |
+| `payloads/agreement.test.ts` | `AgreementBuilder` | Build exitoso, sin registros → null, multiples acuerdos, DelayDays parse, Updatable logica, campos null, fechas, trimming |
 | `dispatch/cdc-debouncer.test.ts` | `CdcDebouncer` | Debounce timer, merge types/codigos, buffer overflow, batching, builder null→pending, dispatcher error, stop() |
 | `dispatch/pending-buffer.test.ts` | `addPending`, `startRetryLoop`, `stopRetryLoop` | Retry exitoso/parcial, max retries, age eviction, capacidad maxima, anti-overlap, dispatch error |
 | `bulk/bulk-service.test.ts` | `BulkService` | sync/delete generico por tipo, skippedDetails, batching, batch failure, mutex, filtro codigos |
 | `bulk/handlers/supplier-handler.test.ts` | `SupplierBulkHandler` | syncAll/deleteAll: happy path, ctercero missing, gproveed missing, builder null, multiples codigos |
 | `bulk/handlers/contact-handler.test.ts` | `ContactBulkHandler` | syncAll/deleteAll: happy path, ctercero/gproveed missing, sin direcciones, builder null, NIF null/empty |
+| `bulk/handlers/agreement-handler.test.ts` | `AgreementBulkHandler` | syncAll/deleteAll: happy path, sin gvenacuh → skip, builder null → skip, multiples codigos, flatten |
 
 ### Estrategia de mocking
 
@@ -295,12 +302,14 @@ La decision de que payloads enviar se toma a nivel de **campo**, no de tabla. Ca
 | `gproveed.fecbaj` | Si | Si | Ambos |
 | `cterdire.*` | No | Si | Solo Contact |
 | `cterasoc.*` | — | — | Sin watched fields (solo almacenamiento en store) |
+| `gvenacuh.*` | No | No | Solo Agreement (exento de filtro codare) |
 
 Resumen por escenario:
 - **Cambio en ctercero** → siempre Supplier + Contact (todos sus campos afectan a ambos)
 - **Cambio en gproveed.fecalt** (fecha alta, sin cambio en fecbaj) → solo Supplier
 - **Cambio en gproveed.fecbaj** (fecha baja) → Supplier + Contact (Status cambia en ambos)
 - **Cambio en cterdire** → solo Contact (direcciones no afectan a Supplier)
+- **Cambio en gvenacuh** → solo Agreement (exento de filtro codare, se envia para todos los terceros)
 
 ### CDC Debouncer (`dispatch/cdc-debouncer.ts`)
 
@@ -371,7 +380,7 @@ Los datos CDC se persisten en SQLite via `better-sqlite3` (API sincrona, ideal p
 - `SnapshotTracker` acepta `startReady=true` para arrancar en modo "ready" y `reset()` para volver a modo rebuild
 - `FORCE_REBUILD=true` fuerza rebuild completo (limpia la DB y lee desde offset 0)
 - Env var `STORE_DB_PATH` (default `./data/store.db`)
-- Docker: volumen `consumer-data` montado en `/app/data`, Dockerfile crea `/app/data` con `chown node:node`
+- Docker: bind mount `./data:/app/data` (la DB queda en el host en `./data/store.db`), Dockerfile crea `/app/data` con `chown node:node`
 - Tag de logging: `"Store"` — visible en Grafana
 
 **Offset out of range**: Si los topics de Kafka se recrean/purgan, los offsets guardados ya no existen. Solucion manual: `docker exec informix-consumer rm -f /app/data/store.db && docker compose restart consumer`.
@@ -389,7 +398,7 @@ Los datos CDC se persisten en SQLite via `better-sqlite3` (API sincrona, ideal p
 - `trimOrNull(value)`: convierte a string, hace trim, devuelve `null` si vacio
 - `isActive(fecbaj)`: `true` si `fecbaj` es null o string vacio (= proveedor activo)
 - `formatDate(value)`: convierte dias-desde-epoch (Debezium) o ISO string a `YYYY-MM-DD`
-- Importados por `SupplierBuilder` y `SupplierContactBuilder` — zero duplicacion
+- Importados por `SupplierBuilder`, `SupplierContactBuilder` y `AgreementBuilder` — zero duplicacion
 
 ### Envelope Debezium
 - Los mensajes Kafka de Debezium vienen con formato `{ schema, payload }` cuando se usa JSON sin schema registry
@@ -410,7 +419,7 @@ Los datos CDC se persisten en SQLite via `better-sqlite3` (API sincrona, ideal p
 
 ### Logging (pino)
 - Todos los logs salen como JSON estructurado via `pino`. No queda ningun `console.log` en el codigo.
-- Cada log lleva un campo `tag` que permite filtrar en Grafana: `CDC`, `StoreRebuild`, `Watch`, `Supplier`, `SupplierContact`, `PendingBuffer`, `Debounce`, `Consumer`, `Dispatcher`, `BulkSync`.
+- Cada log lleva un campo `tag` que permite filtrar en Grafana: `CDC`, `StoreRebuild`, `Watch`, `Supplier`, `SupplierContact`, `Agreement`, `PendingBuffer`, `Debounce`, `Consumer`, `Dispatcher`, `BulkSync`.
 - `LOG_LEVEL=info` (default): metadatos solamente (tabla, operacion, campos cambiados, codigo). No se loguean valores PII.
 - `LOG_LEVEL=debug`: incluye payloads completos (Supplier/SupplierContact bodies), valores before/after de campos, y mensajes non-CDC. Solo usar en desarrollo.
 
@@ -452,6 +461,9 @@ Cada `BulkHandler` valida existencia en el store **antes** de llamar al builder 
 | `ContactBulkHandler` | `deleteAll` | `ctercero` no existe | `"Not found in store (ctercero)"` |
 | `ContactBulkHandler` | `deleteAll` | codare no aplicable | `"codare 'XXX' not applicable"` |
 | `ContactBulkHandler` | `deleteAll` | NIF nulo o vacio | `"Missing NIF (cif)"` |
+| `AgreementBulkHandler` | `syncAll` | sin registros gvenacuh | `"No agreements found (gvenacuh)"` |
+| `AgreementBulkHandler` | `syncAll` | builder retorna null | `"Builder returned null"` |
+| `AgreementBulkHandler` | `deleteAll` | sin registros gvenacuh | `"No agreements found (gvenacuh)"` |
 
 Ejemplo de respuesta con skips:
 ```json
@@ -481,6 +493,8 @@ Ejemplo de respuesta con skips:
 | `/triggers/suppliers` | DELETE | Bearer | `{ CodSupplier?: string[] }` | Delete bulk de suppliers |
 | `/triggers/contacts` | POST | Bearer | `{ CodSupplier?: string[] }` | Sync bulk de contacts |
 | `/triggers/contacts` | DELETE | Bearer | `{ CodSupplier?: string[] }` | Delete bulk de contacts |
+| `/triggers/agreements` | POST | Bearer | `{ CodSupplier?: string[] }` | Sync bulk de agreements |
+| `/triggers/agreements` | DELETE | Bearer | `{ CodSupplier?: string[] }` | Delete bulk de agreements |
 | `/store` | GET | No | — | Store Viewer (pagina HTML interactiva) |
 | `/store/api/stats` | GET | Bearer | — | Stats del store (counts + tamano SQLite en disco) |
 | `/store/api/tables/:table` | GET | Bearer | — | Lista codigos de una tabla |
@@ -502,7 +516,7 @@ Pagina HTML autocontenida servida en `/store` que permite explorar el contenido 
 Funcionalidades de la UI:
 - Stats dashboard con cards por tabla + total, incluyendo **tamano en disco** (SQLite file size)
 - Explorador de tabla: selector + lista de codigos (con filtro local)
-- Vista unificada por codigo: carga datos de **todas las tablas** (ctercero + gproveed + cterdire + cterasoc) en un solo panel
+- Vista unificada por codigo: carga datos de **todas las tablas** (ctercero + gproveed + cterdire + cterasoc + gvenacuh) en un solo panel
 - Busqueda global: busca substring de codigo en todas las tablas (debounce 300ms en el cliente)
 - JSON syntax highlighting (keys, strings, numbers, booleans, nulls) con tema oscuro
 - Responsive basico (layout vertical en pantallas estrechas)
@@ -543,6 +557,8 @@ Volumes Docker: `loki-data`, `grafana-data` (persistencia entre reinicios).
 4. ~~Tests unitarios (Tier 1 + Tier 2)~~ ✓
 5. ~~Refactoring entity-registry para escalabilidad~~ ✓
 6. ~~Store Viewer — visor web del InMemoryStore~~ ✓
-7. Manejo de reintentos HTTP y dead letter queue
-8. Filtrado por tipo de operacion si es necesario
-9. Alertas en Grafana (ej. errores sostenidos, pending buffer creciendo)
+7. ~~Entidad Agreement (gvenacuh → /ingest-api/agreements)~~ ✓
+8. **TODO**: Resolver mapping de `IdClient` en Agreement (la API requiere UUID, `gvenacuh.terenv` es un codigo de tercero)
+9. Manejo de reintentos HTTP y dead letter queue
+10. Filtrado por tipo de operacion si es necesario
+11. Alertas en Grafana (ej. errores sostenidos, pending buffer creciendo)
