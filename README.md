@@ -638,7 +638,7 @@ El store se invalida (clear + rebuild) en dos casos:
 | `STORE_DB_PATH` | `./data/store.db` | Ruta del fichero SQLite |
 | `FORCE_REBUILD` | `false` | Si `true`, limpia el store y fuerza rebuild completo desde Kafka |
 
-En Docker, el compose monta un named volume `consumer-data` en `/app/data` para que la DB persista entre recreaciones del container. El Dockerfile crea `/app/data` con `chown node:node` para que el proceso (que corre como `USER node`) pueda escribir.
+En Docker, el compose monta un bind mount `./data:/app/data` para que la DB quede directamente accesible en el host (`./data/store.db`). La carpeta `data/` esta en `.gitignore`. El Dockerfile crea `/app/data` con `chown node:node` para que el proceso (que corre como `USER node`) pueda escribir.
 
 ## Requisitos previos
 
